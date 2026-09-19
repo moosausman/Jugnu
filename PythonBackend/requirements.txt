@@ -1,0 +1,20 @@
+# Jugnu -- Python dependencies
+# Generated from the actual `import` statements across the full codebase,
+# including tools/tools.py, tools/extra_tools.py, tools/notion_service.py,
+# and tools/macbridge.py. Everything else imported (json, os, threading,
+# sqlite3, dataclasses, pathlib, subprocess, inspect, difflib, re, random,
+# string, concurrent.futures, etc.) is Python stdlib and needs no entry
+# here.
+
+# llm_client.py -- local model provider (Ollama) + hosted-API HTTP calls
+ollama>=0.3.0
+requests>=2.31.0
+
+# search.py -- web research pipeline (embedding math + HTML scraping)
+numpy>=1.26.0
+beautifulsoup4>=4.12.0
+
+# tools/extra_tools.py, tools/notion_service.py, tools/macbridge.py --
+# Open-Meteo, Nominatim, Wikipedia, Notion, mail.tm, and the local
+# MacBridge server are all called as plain REST endpoints via `requests`
+# (already listed above) -- no SDKs, no additional packages needed.

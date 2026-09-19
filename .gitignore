@@ -1,0 +1,33 @@
+# ── Python ────────────────────────────────────────────────────────────────
+# The venv is ~63MB and, more importantly, is NOT relocatable: its
+# bin/python is a symlink into /opt/homebrew and its console scripts have
+# absolute shebangs. Recreate it instead of committing it:
+#   python3 -m venv PythonBackend/PythonEnv
+#   PythonBackend/PythonEnv/bin/pip install -r PythonBackend/requirements.txt
+PythonBackend/PythonEnv/
+PythonBackend/venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ── Xcode ─────────────────────────────────────────────────────────────────
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+*.moved-aside
+
+# ── macOS ─────────────────────────────────────────────────────────────────
+.DS_Store
+
+# ── Secrets ───────────────────────────────────────────────────────────────
+# Nothing here should ever hold a credential -- the hosted-API key lives in
+# the Keychain (KeychainStore.swift) and NOTION_API_KEY / MACBRIDGE_TOKEN
+# come from the environment. This is a backstop for a local .env, not a
+# place to start keeping one.
+.env
+.env.*
+*.pem
+secrets.json
