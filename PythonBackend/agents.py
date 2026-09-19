@@ -270,6 +270,7 @@ AGENTS = {
         autonomous_safe=False,
         tool_names=[
             "whatsapp_status", "whatsapp_open", "whatsapp_open_chat",
+            "whatsapp_open_chat_by_name",
             "whatsapp_read", "whatsapp_search", "whatsapp_draft", "whatsapp_send",
             "contacts_search", "contacts_list",
             "safari_open", "safari_tabs", "safari_current_tab",

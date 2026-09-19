@@ -1597,15 +1597,45 @@ def whatsapp_read(max_nodes: int = 500, max_depth: int = 14, timeout: float = 8.
     return call("/whatsapp/read", {"maxNodes": max_nodes, "maxDepth": max_depth, "timeout": timeout}, timeout=30)
 
 
-def whatsapp_search(query: str, search_element_id: str) -> dict:
-    """Set an observed native WhatsApp search field. Re-read results, resolve
-    the correct chat, then use its exposed ui_action or observed frame to open.
+def whatsapp_open_chat_by_name(name: str) -> dict:
+    """Opens a WhatsApp chat by the contact or group name, in one step.
+
+    This is the tool to use for "message <person> on WhatsApp". It searches,
+    matches, opens the chat, and verifies the conversation header really is
+    who you asked for -- then hands back fresh headerElementId and
+    editorElementId you can pass straight to whatsapp_draft. Doing that by
+    hand takes six separate calls and usually runs out of budget.
+
+    It deliberately refuses to guess. If several chats match the name, or
+    none do, nothing is opened and the candidate names come back in
+    "candidates" -- report those and ask which one rather than picking.
+
+    Does NOT draft or send anything. Follow with whatsapp_draft, then
+    re-read for fresh IDs, then whatsapp_send.
+
+    Args:
+        name: The contact or group name as it appears in WhatsApp, e.g.
+            "Hashim". Match is case-insensitive; an exact name is tried
+            first, then a contains match.
+    """
+    return call("/whatsapp/open-chat-by-name", {"name": name}, timeout=60)
+
+
+def whatsapp_search(query: str, search_element_id: Optional[str] = None) -> dict:
+    """Types into WhatsApp's search bar and returns the matching chat rows.
+
+    Prefer whatsapp_open_chat_by_name when the goal is to open a specific
+    person's chat -- it does this plus the matching, opening and recipient
+    verification in one call. Use this one to browse what matches a term
+    without opening anything.
 
     Args:
         query: Contact name, phone or other search text, at most 1000 characters.
-        search_element_id: Search input ID observed in whatsapp_read.
+        search_element_id: Ignored, kept so older callers don't break. The
+            search bar is located by its own identifier now -- you no longer
+            need a snapshot just to get an ID for it.
     """
-    return call("/whatsapp/search", {"query": query, "searchElementId": search_element_id})
+    return call("/whatsapp/search", {"query": query}, timeout=60)
 
 
 def whatsapp_draft(header_element_id: str, editor_element_id: str,
@@ -2216,6 +2246,7 @@ _tool_functions = [
     whatsapp_open,
     whatsapp_open_chat,
     whatsapp_read,
+    whatsapp_open_chat_by_name,
     whatsapp_search,
     whatsapp_draft,
     whatsapp_send,
