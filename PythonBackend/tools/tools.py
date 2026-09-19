@@ -126,6 +126,54 @@ def spotify_control(action: str = "", volume: int = -1) -> dict:
     return call("/spotify/control", args, timeout=25)
 
 
+def current_session() -> dict:
+    """Reports which macOS login Jugnu is currently acting in, and which are available.
+
+    Read-only. "agent" is the dedicated account with its own desktop;
+    "primary" is the user's own login, with their apps and windows.
+    """
+    from .macbridge import SESSIONS, active_session, session_available
+    return {
+        "ok": True,
+        "active": active_session(),
+        "sessions": {
+            name: {"url": url, "reachable": session_available(name)}
+            for name, url in SESSIONS.items()
+        },
+    }
+
+
+def set_target_session(session: str) -> dict:
+    """Chooses which macOS login subsequent actions happen in.
+
+    Use "primary" when the user asks for something to happen on THEIR
+    account -- "on my machine", "on my account", "in my Chrome", "open it
+    here", or anything about the windows they can currently see. Use
+    "agent" for ordinary work that shouldn't disturb them.
+
+    Refuses to switch to a session that isn't answering, rather than
+    silently sending the work somewhere it can't run.
+
+    Args:
+        session: "agent" (the dedicated account's desktop) or "primary"
+            (the user's own login).
+    """
+    from .macbridge import set_active_session, session_available, SESSIONS
+    if session not in SESSIONS:
+        return {"ok": False, "error": f"session must be one of {sorted(SESSIONS)}"}
+    if not session_available(session):
+        detail = ("The agent account may not be provisioned yet, or isn't logged in "
+                  "via Fast User Switching -- its MacBridge only runs inside a live "
+                  "login session."
+                  if session == "agent" else
+                  "MacBridge isn't running in the primary session.")
+        return {"ok": False, "error": f"The {session!r} session isn't responding. {detail}",
+                "session": session}
+    set_active_session(session)
+    return {"ok": True, "active": session,
+            "note": f"Subsequent actions will happen in the {session} session."}
+
+
 def list_learned_skills(limit: int = 20) -> dict:
     """Lists the procedures Jugnu has taught itself by doing tasks successfully.
 
@@ -2234,6 +2282,8 @@ _tool_functions = [
     spotify_now_playing,
     spotify_control,
     save_fact,
+    current_session,
+    set_target_session,
     list_learned_skills,
     search_web,
     ask_user,

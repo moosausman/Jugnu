@@ -38,7 +38,11 @@ _SCHEMA_BY_NAME = {s["function"]["name"]: s for s in SCHEMAS}
 
 # Shared desktop controls from the updated tools.py. These can mutate the UI;
 # any agent receiving them must keep autonomous_safe=False.
-_DESKTOP_TOOL_NAMES = [
+# Session control rides with the desktop tools: any agent that can drive a
+# screen needs to be able to say WHICH screen.
+_SESSION_TOOL_NAMES = ["current_session", "set_target_session"]
+
+_DESKTOP_TOOL_NAMES = _SESSION_TOOL_NAMES + [
     "automation_permissions",
     "mouse_position", "mouse_move", "mouse_click", "mouse_drag", "mouse_scroll",
     "screen_displays", "screen_capture",
@@ -165,6 +169,7 @@ AGENTS = {
         # shouldn't be a silent side effect of a tool-routing cleanup.
         tool_names=[
             "open_app", "close_app", "notifications_send",
+            "current_session", "set_target_session",
             "play_song", "spotify_search", "spotify_play_uri",
             "spotify_now_playing", "spotify_control",
             "clipboard_get", "clipboard_set", "finder_open", "finder_reveal",

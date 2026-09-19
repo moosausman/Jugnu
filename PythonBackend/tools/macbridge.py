@@ -3,7 +3,71 @@ import os
 import requests
 from typing import Any, Dict, Optional
 
-BASE = os.environ.get("MACBRIDGE_URL", "http://localhost:8765")
+# ---------------------------------------------------------------------------
+# Sessions: which macOS login Jugnu acts in
+# ---------------------------------------------------------------------------
+# macOS ties GUI automation to a login session. Apple Events, the
+# accessibility tree, the keyboard and mouse, and the screen all belong to
+# ONE session, and a process in a different session simply cannot reach
+# them -- there is no permission that grants it. So acting as a separate
+# user means a separate MacBridge running inside that user's session, and
+# choosing between them means choosing a port.
+#
+#   primary  :8765   your own login. Your apps, your windows, your files.
+#   agent    :8766   the dedicated agent account's login, provisioned with
+#                    second-self's setup/provision.sh, which bootstraps
+#                    services into that session via `launchctl bootstrap
+#                    gui/<uid>`.
+#
+# The agent session is the default: work happens on its desktop, not over
+# the top of whatever you are doing. Saying "on my account" switches a
+# request to the primary session -- see set_target_session in tools.py.
+SESSIONS = {
+    "primary": os.environ.get("MACBRIDGE_URL", "http://localhost:8765"),
+    "agent": os.environ.get("MACBRIDGE_AGENT_URL", "http://localhost:8766"),
+}
+
+# Falls back to "primary" so that, until the agent account is provisioned,
+# everything behaves exactly as it did before.
+DEFAULT_SESSION = os.environ.get("JUGNU_DEFAULT_SESSION", "primary")
+
+_active_session = DEFAULT_SESSION
+
+
+def active_session() -> str:
+    return _active_session
+
+
+def set_active_session(name: str) -> str:
+    """Point subsequent calls at a different session. Returns the name set."""
+    global _active_session
+    if name not in SESSIONS:
+        raise ValueError(f"unknown session {name!r}; expected one of {sorted(SESSIONS)}")
+    _active_session = name
+    return name
+
+
+def session_url(name: str | None = None) -> str:
+    return SESSIONS[name or _active_session]
+
+
+def session_available(name: str) -> bool:
+    """Whether a MacBridge is actually answering in that session.
+
+    Checked rather than assumed: the agent session only exists once the
+    account has been provisioned AND logged in via Fast User Switching, and
+    a request silently landing in the wrong session would be worse than a
+    clear failure.
+    """
+    try:
+        r = requests.get(SESSIONS[name] + "/health", timeout=2)
+        return r.ok
+    except Exception:
+        return False
+
+
+# Kept as a module attribute for anything that still reads it directly.
+BASE = SESSIONS["primary"]
 
 # MacBridge's Server.swift supports bearer auth, but only when MACBRIDGE_TOKEN
 # is set in ITS environment -- unset, it accepts any request from any local
@@ -46,6 +110,7 @@ def call(
     args: Optional[Dict[str, Any]] = None,
     *,
     timeout: Optional[float] = 20,
+    session: Optional[str] = None,
     **kwargs: Any,
 ) -> dict:
     """POST to the MacBridge server.
@@ -79,16 +144,19 @@ def call(
 
     try:
         r = requests.post(
-            BASE + endpoint,
+            session_url(session) + endpoint,
             json={"args": payload},
             headers=_headers(),
             timeout=timeout,
         )
     except requests.exceptions.Timeout as e:
         raise MacBridgeTimeout(
-            f"{endpoint} did not respond within {timeout}s. This means "
-            f"Python stopped waiting, not that the action was cancelled or "
-            f"failed on the Mac side -- see MacBridgeTimeout's docstring."
+            f"{endpoint} did not respond within {timeout}s in the "
+            f"{session or _active_session!r} session ({session_url(session)}). "
+            f"This means Python stopped waiting, not that the action was "
+            f"cancelled or failed on the Mac side -- see MacBridgeTimeout's "
+            f"docstring. If this is the agent session, check that the account "
+            f"is provisioned and logged in via Fast User Switching."
         ) from e
 
     r.raise_for_status()

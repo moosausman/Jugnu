@@ -137,6 +137,30 @@ them their place in it.
 - This changes HOW you work, never WHAT you report. Say plainly what you
   did and what you found, the same as always."""
 
+# Which macOS login desktop work happens in. Only meaningful once the agent
+# account has been provisioned AND logged in -- see tools/macbridge.py.
+# Defaults to "primary" so nothing changes until that's actually set up.
+DEFAULT_SESSION = os.environ.get("JUGNU_DEFAULT_SESSION", "primary")
+
+SESSION_RULES = """━━━ WHICH DESKTOP ━━━
+There are two macOS logins available, each with its own desktop, windows
+and running apps. You are currently defaulting to the AGENT session: a
+dedicated account whose screen is not the one the user is looking at.
+
+- Work in the agent session by default. That is the point of it — tasks
+  happen on its desktop instead of on top of whatever the user is doing.
+- Switch with set_target_session("primary") when the request is about
+  THEIR machine: "on my account", "in my Chrome", "open it here", "the
+  window I have open", or anything referring to what they can currently
+  see. Switch before acting, not after.
+- Files, apps and logins are NOT shared between the two. A file written in
+  the agent session is not on the user's Desktop; an app logged in there is
+  a different login. If a task needs their actual data, it belongs in the
+  primary session — say so rather than doing it in the wrong place.
+- current_session() reports where you are and which sessions are live.
+  If a switch is refused because a session isn't responding, report that
+  plainly; do not silently do the work in the other one."""
+
 CORE_BEHAVIOR = """━━━ CORE BEHAVIOUR ━━━
 
 Be concise. Lead with the answer. Cut the filler.
@@ -510,6 +534,11 @@ def agent_system_prompt(agent_name: str, facts: str = "") -> str:
     # quiet-working rule belongs here rather than in the persona prompt.
     if QUIET_MODE:
         parts.append(QUIET_OPERATION)
+
+    # Only when a second session is actually in play. Describing two
+    # desktops to a model that only has one is worse than saying nothing.
+    if DEFAULT_SESSION == "agent":
+        parts.append(SESSION_RULES)
 
     rules = TOOL_RULES.get(agent_name)
 
