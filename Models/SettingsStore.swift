@@ -84,6 +84,19 @@ final class SettingsStore: ObservableObject {
     @Published var embedModel: String { didSet { defaults.set(embedModel, forKey: Keys.embedModel) } }
     @Published var apiEmbedModel: String { didSet { defaults.set(apiEmbedModel, forKey: Keys.apiEmbedModel) } }
 
+    // MARK: - Spotify
+    // Needed only to turn a song NAME into something playable. Spotify's
+    // own AppleScript has no search command, and its desktop UI is Electron
+    // with no named accessibility controls, so there is no local way to do
+    // it. Playback control (pause, skip, volume, what's playing) needs none
+    // of this.
+    //
+    // Client Credentials flow: an app-level token, no user login, no
+    // redirect. The secret goes to the Keychain, like the model API key.
+
+    @Published var spotifyClientID: String { didSet { defaults.set(spotifyClientID, forKey: Keys.spotifyClientID) } }
+    @Published var spotifyClientSecret: String { didSet { KeychainStore.set(spotifyClientSecret, for: Keys.spotifyClientSecret) } }
+
     // MARK: - Awareness & memory
 
     /// Work without taking over the screen: silent shell commands instead of
@@ -134,6 +147,8 @@ final class SettingsStore: ObservableObject {
         static let embedProvider = "settings.embedProvider"
         static let embedModel = "settings.embedModel"
         static let apiEmbedModel = "settings.apiEmbedModel"
+        static let spotifyClientID = "settings.spotifyClientID"
+        static let spotifyClientSecret = "spotifyClientSecret"  // Keychain account
         static let quietMode = "settings.quietMode"
         static let awareness = "settings.awareness"
         static let activityTracking = "settings.activityTracking"
@@ -173,6 +188,8 @@ final class SettingsStore: ObservableObject {
         embedProvider = Provider(rawValue: defaults.string(forKey: Keys.embedProvider) ?? "") ?? .local
         embedModel = defaults.string(forKey: Keys.embedModel) ?? "nomic-embed-text"
         apiEmbedModel = defaults.string(forKey: Keys.apiEmbedModel) ?? ""
+        spotifyClientID = defaults.string(forKey: Keys.spotifyClientID) ?? ""
+        spotifyClientSecret = KeychainStore.get(Keys.spotifyClientSecret) ?? ""
         quietModeEnabled = defaults.object(forKey: Keys.quietMode) as? Bool ?? true
         situationalAwarenessEnabled = defaults.object(forKey: Keys.awareness) as? Bool ?? true
         activityTrackingEnabled = defaults.object(forKey: Keys.activityTracking) as? Bool ?? false
@@ -225,6 +242,11 @@ final class SettingsStore: ObservableObject {
                 // happen to be set in the shell Jugnu was launched from.
                 env["JUGNU_API_KEY"] = apiKey
             }
+        }
+
+        if !spotifyClientID.isEmpty && !spotifyClientSecret.isEmpty {
+            env["SPOTIFY_CLIENT_ID"] = spotifyClientID
+            env["SPOTIFY_CLIENT_SECRET"] = spotifyClientSecret
         }
 
         switch embedProvider {

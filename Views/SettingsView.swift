@@ -22,6 +22,7 @@ struct SettingsView: View {
                 header
                 modelSection
                 awarenessSection
+                spotifySection
                 proactiveSection
                 dailyReviewSection
                 privacySection
@@ -168,6 +169,27 @@ struct SettingsView: View {
                     helpText: "Rewrites and reasons over web search results specifically."
                 )
             }
+        }
+    }
+
+    // MARK: - Spotify
+
+    private var spotifySection: some View {
+        SettingsSection(
+            title: "Spotify",
+            description: "Only needed to play a song by name. Spotify's own scripting has no search, and its window is Electron with no controls Jugnu can read — so a name can't be turned into something playable without this. Pause, skip, volume and \"what's playing\" all work without it."
+        ) {
+            SettingsTextRow(
+                label: "Client ID",
+                text: $settings.spotifyClientID,
+                placeholder: "from developer.spotify.com/dashboard"
+            )
+            SettingsSecureRow(label: "Client Secret", text: $settings.spotifyClientSecret)
+            Text("Create any app at developer.spotify.com/dashboard, then copy its Client ID and Secret here. Free, about two minutes, and no redirect URI is needed.")
+                .font(Theme.text(10.5))
+                .foregroundStyle(Theme.inkFaint)
+                .lineSpacing(1.5)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
