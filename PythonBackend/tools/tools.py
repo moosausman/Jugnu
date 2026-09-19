@@ -291,9 +291,22 @@ def mail_send(to: str, subject: str, body: str) -> dict:
  
 # ---------------------------------------------------------------- Safari
  
-def safari_open(url: str) -> dict:
-    """Open a new tab with the given URL."""
-    return call("/safari/open", {"url": url})
+def safari_open(url: str, background: bool = True) -> dict:
+    """Opens a URL in a new Safari tab, in the background by default.
+
+    Background means Safari is NOT brought to the front and the tab is not
+    made current -- the user keeps working in whatever they had focused and
+    nothing appears in front of them. Use this for anything you're opening
+    for your own reference or for them to look at later.
+
+    Args:
+        url: The exact URL to open, including scheme, e.g. "https://example.com".
+        background: True (default) opens quietly behind whatever they're
+            doing. Pass False only when they've asked to be shown the page
+            ("open X", "pull up Y"), which activates Safari and focuses the
+            new tab.
+    """
+    return call("/safari/open", {"url": url, "background": background})
  
  
 def safari_tabs() -> dict:

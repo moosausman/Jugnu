@@ -168,6 +168,11 @@ struct SettingsView: View {
     private var awarenessSection: some View {
         SettingsSection(title: "Awareness & Memory", description: nil) {
             SettingsToggleRow(
+                title: "Work quietly",
+                description: "Runs commands silently and opens pages in background tabs, instead of taking over your screen with Terminal windows and foreground tabs. Ask Jugnu to \"show me\" or \"run it in Terminal\" any time you do want to watch. Opening an app, and anything that types or clicks for you, still has to come to the front.",
+                isOn: $settings.quietModeEnabled
+            )
+            SettingsToggleRow(
                 title: "Situational awareness",
                 description: "Lets Jugnu see which app and window are frontmost, so \"close this\" resolves to something real.",
                 isOn: $settings.situationalAwarenessEnabled

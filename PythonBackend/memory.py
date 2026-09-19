@@ -110,6 +110,33 @@ def date_block() -> str:
 
 
 
+# Work without taking over the screen. On by default -- an assistant that
+# steals focus mid-sentence is worse than one that takes an extra second.
+# JUGNU_QUIET_MODE=0 restores the old show-your-work behaviour, where shell
+# commands run in a visible Terminal and opened pages jump to the front.
+QUIET_MODE = os.environ.get("JUGNU_QUIET_MODE", "1") != "0"
+
+QUIET_OPERATION = """━━━ WORK QUIETLY ━━━
+Do the work without taking over the user's screen. They are usually in the
+middle of something else, and every window that jumps to the front costs
+them their place in it.
+
+- Prefer the silent version of a tool over the visible one: shell_run over
+  shell_stage, a background tab over a foreground one. Silent tools also
+  give you better information — real exit codes and output instead of a
+  screenshot of a window.
+- Never bring an app to the front just to look at it. Read it with
+  ui_snapshot, safari_tabs, file_read or the relevant list tool instead.
+- Some things genuinely cannot be quiet: opening an app because the user
+  asked for it open, and anything driving the keyboard or mouse (including
+  WhatsApp), which needs the target app frontmost to receive input. Do
+  those normally — just don't add avoidable interruptions around them.
+- Be loud when asked. "Show me", "open it", "let me watch", "run it in
+  Terminal" are all requests to be visible: honour them exactly, for that
+  request. Don't carry it over into unrelated later steps.
+- This changes HOW you work, never WHAT you report. Say plainly what you
+  did and what you found, the same as always."""
+
 CORE_BEHAVIOR = """━━━ CORE BEHAVIOUR ━━━
 
 Be concise. Lead with the answer. Cut the filler.
@@ -305,10 +332,11 @@ never invent a recipient that wasn't given to you.""",
 
 safari_tabs / safari_current_tab: read-only, use to answer "what's open" questions.
 
-safari_open: opens a new tab immediately — use the exact URL given, or a
-
-well-formed URL to the specific site asked for. Don't guess a URL for
-
+safari_open: opens a tab in the BACKGROUND by default (background=True) —
+Safari is not brought forward and the user keeps whatever focus they had.
+Leave it that way unless they've asked to be shown the page ("open X for me",
+"pull up Y"), in which case pass background=False. Use the exact URL given, or
+a well-formed URL to the specific site asked for. Don't guess a URL for
 something you'd be better off telling the research agent to look up.""",
 
     "lookup": """━━━ LOOKUP ━━━
@@ -375,7 +403,24 @@ embellish on their behalf.""",
 
 
 
-    "automation": """━━━ SHELL & AUTOMATION ━━━
+    "automation": ("""━━━ SHELL & AUTOMATION ━━━
+
+- Default to shell_run/shell_run_script. They execute immediately and hand back
+  stdout, stderr and the exit code with NO Terminal window and no interruption
+  to whatever the user is doing. This is the right tool for almost everything,
+  including commands that change things.
+- Use shell_stage/shell_stage_script ONLY when the user has actually asked to
+  watch — "show me", "run it in Terminal", "let me see it happen" — or when a
+  command is risky enough that they should read it before it runs (then pass
+  auto_run=False so it waits for their Return). Staging opens and focuses a
+  real Terminal window, taking over the screen; don't do that uninvited.
+- shell_run gives you real ground truth (exit code, stdout, stderr). A staging
+  response only confirms the paste landed, never that the command worked.
+- Use shell_spawn for anything long-running — dev servers, watchers, big
+  downloads. It returns a jobId immediately and stays out of sight.
+- Use the desktop tools for observed mouse/keyboard/app interactions. Route
+  WhatsApp chat tasks to the whatsapp specialist when planning the work.
+""" if QUIET_MODE else """━━━ SHELL & AUTOMATION ━━━
 
 - Use shell_stage/shell_stage_script for requested command execution and changes
   so the user can watch Terminal. Their Python auto_run parameter defaults to
@@ -387,7 +432,7 @@ embellish on their behalf.""",
   completion. Verify the actual result before claiming success or depending on it.
 - Use the desktop tools for observed mouse/keyboard/app interactions. Route
   WhatsApp chat tasks to the whatsapp specialist when planning the work.
-""" + DESKTOP_CONTROL_RULES,
+""") + DESKTOP_CONTROL_RULES,
 
     "whatsapp": DESKTOP_CONTROL_RULES + """━━━ WHATSAPP ━━━
 
@@ -460,6 +505,11 @@ def agent_system_prompt(agent_name: str, facts: str = "") -> str:
     """System prompt for a specialist agent executing one task."""
 
     parts = [IDENTITY, date_block(), AGENT_DISCIPLINE, SITUATIONAL_AWARENESS]
+
+    # Agents are the layer that actually touches the screen, so the
+    # quiet-working rule belongs here rather than in the persona prompt.
+    if QUIET_MODE:
+        parts.append(QUIET_OPERATION)
 
     rules = TOOL_RULES.get(agent_name)
 

@@ -86,6 +86,13 @@ final class SettingsStore: ObservableObject {
 
     // MARK: - Awareness & memory
 
+    /// Work without taking over the screen: silent shell commands instead of
+    /// a Terminal window, background tabs instead of foreground ones. On by
+    /// default. Doesn't (and can't) cover everything -- opening an app, or
+    /// anything driving the keyboard/mouse, has to bring that app forward to
+    /// work at all.
+    @Published var quietModeEnabled: Bool { didSet { defaults.set(quietModeEnabled, forKey: Keys.quietMode) } }
+
     @Published var situationalAwarenessEnabled: Bool { didSet { defaults.set(situationalAwarenessEnabled, forKey: Keys.awareness) } }
     @Published var activityTrackingEnabled: Bool { didSet { defaults.set(activityTrackingEnabled, forKey: Keys.activityTracking) } }
     @Published var includeBrowserHistoryInReview: Bool { didSet { defaults.set(includeBrowserHistoryInReview, forKey: Keys.browserHistory) } }
@@ -127,6 +134,7 @@ final class SettingsStore: ObservableObject {
         static let embedProvider = "settings.embedProvider"
         static let embedModel = "settings.embedModel"
         static let apiEmbedModel = "settings.apiEmbedModel"
+        static let quietMode = "settings.quietMode"
         static let awareness = "settings.awareness"
         static let activityTracking = "settings.activityTracking"
         static let browserHistory = "settings.browserHistory"
@@ -165,6 +173,7 @@ final class SettingsStore: ObservableObject {
         embedProvider = Provider(rawValue: defaults.string(forKey: Keys.embedProvider) ?? "") ?? .local
         embedModel = defaults.string(forKey: Keys.embedModel) ?? "nomic-embed-text"
         apiEmbedModel = defaults.string(forKey: Keys.apiEmbedModel) ?? ""
+        quietModeEnabled = defaults.object(forKey: Keys.quietMode) as? Bool ?? true
         situationalAwarenessEnabled = defaults.object(forKey: Keys.awareness) as? Bool ?? true
         activityTrackingEnabled = defaults.object(forKey: Keys.activityTracking) as? Bool ?? false
         includeBrowserHistoryInReview = defaults.object(forKey: Keys.browserHistory) as? Bool ?? true
@@ -186,6 +195,7 @@ final class SettingsStore: ObservableObject {
         var env: [String: String] = [
             "JUGNU_PROVIDER": provider.rawValue,
             "JUGNU_EMBED_PROVIDER": embedProvider.rawValue,
+            "JUGNU_QUIET_MODE": quietModeEnabled ? "1" : "0",
             "JUGNU_ENABLE_AWARENESS": situationalAwarenessEnabled ? "1" : "0",
             "JUGNU_TRACK_ACTIVITY": activityTrackingEnabled ? "1" : "0",
             "JUGNU_INCLUDE_BROWSER_HISTORY": includeBrowserHistoryInReview ? "1" : "0",
