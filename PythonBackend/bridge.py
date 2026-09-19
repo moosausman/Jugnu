@@ -154,6 +154,7 @@ import daily_review
 import proactive
 import semantic_memory as smem
 import session
+import skills
 
 PROACTIVE_ENABLED = os.environ.get("JUGNU_PROACTIVE", "0") == "1"
 PROACTIVE_POLL_SECONDS = float(os.environ.get("JUGNU_PROACTIVE_POLL_SECONDS", "20"))
@@ -488,6 +489,11 @@ def main() -> None:
             # Doesn't touch the conversation or facts at all.
             with turn_lock:
                 smem.clear_all()
+                # Learned procedures are derived from the same history, so
+                # "forget what I've been doing" has to include how it
+                # learned to do it -- otherwise the timeline is wiped while
+                # skills quietly keep replaying routes built from it.
+                skills.clear_all()
             emit({"type": "memory_cleared"})
 
         elif kind == "ping":

@@ -9,6 +9,7 @@ synthesis use the smaller AGENT model.
 from agent_core import run_tool_loop
 from agents import AGENTS
 from memory import agent_system_prompt, facts_as_string, persona_reply
+import skills
 
 
 MAX_TASK_ITERATIONS = 15
@@ -77,6 +78,15 @@ def run_task(
         return daily_review.build_report()
 
     agent = AGENTS[task.agent]
+
+    # Has this been done before? A known-good route is handed to the agent
+    # up front so it starts from a solution instead of searching for one.
+    # That search is the thing that makes repeat tasks slow and burns the
+    # iteration budget -- see skills.py.
+    known = skills.recall(task.description, task.agent)
+    if known:
+        user_message = f"{user_message}\n\n{skills.as_prompt_block(known)}"
+
     messages = [
         {
             "role": "system",
@@ -94,6 +104,20 @@ def run_task(
         on_tool_call=on_tool_call,
         on_tool_result=on_tool_result,
     )
+
+    # Did this actually work? Deliberately conservative: only a clean finish
+    # counts. Learning a route that ran out of budget, or whose last tool
+    # call failed, would teach the wrong lesson and then keep recommending
+    # it -- exactly the failure mode this is meant to remove.
+    succeeded = bool(result.steps) and not result.exhausted and not result.last_failed
+
+    if known:
+        # Whether the recalled route held up. A skill that stops working
+        # gets retired automatically rather than being suggested forever.
+        skills.feedback(known["id"], worked=succeeded)
+    if succeeded:
+        skills.record(task.description, task.agent, result.steps, succeeded=True)
+
     return result.content
 
 

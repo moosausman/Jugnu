@@ -20,9 +20,20 @@ import llm_client
 
 
 class AgentResult:
-    def __init__(self, content: str, messages: list):
+    def __init__(self, content: str, messages: list, steps=None,
+                 exhausted: bool = False, last_failed: bool = False):
         self.content = content
         self.messages = messages
+        # The tool sequence this run actually used, in order. skills.py
+        # stores it so the same job doesn't have to be worked out again --
+        # see executor.run_task.
+        self.steps = steps or []
+        # True when the loop hit max_iterations rather than finishing. A
+        # procedure that ran out of budget is not one worth learning.
+        self.exhausted = exhausted
+        # True when the final tool call failed, which usually means the
+        # answer is an explanation of a failure rather than a success.
+        self.last_failed = last_failed
 
 
 MAX_TOOL_RESULT_CHARS = 6000
@@ -109,6 +120,8 @@ def run_tool_loop(
     on_tool_result(name, args, result) -- called right after
     """
     iterations = 0
+    steps: list = []          # tool sequence, for skills.py
+    last_result_failed = False
     last_call_sig = None  # (name, sorted-args-json) of the previous tool call --
     # lets us catch a stuck agent repeating itself exactly and stop before
     # burning the rest of max_iterations on identical, doomed-to-repeat calls.
@@ -143,7 +156,9 @@ def run_tool_loop(
             response = llm_client.chat(messages=messages, think=False, role=role)
             message = response["message"]
             messages.append(message.model_dump())
-            return AgentResult(content=message.content or "", messages=messages)
+            return AgentResult(content=message.content or "", messages=messages,
+                               steps=steps, exhausted=True,
+                               last_failed=last_result_failed)
 
         if on_status:
             on_status("thinking")
@@ -153,7 +168,9 @@ def run_tool_loop(
         messages.append(message.model_dump())
 
         if not message.tool_calls:
-            return AgentResult(content=message.content or "", messages=messages)
+            return AgentResult(content=message.content or "", messages=messages,
+                               steps=steps, exhausted=False,
+                               last_failed=last_result_failed)
 
         for tool_call in message.tool_calls:
             name = tool_call.function.name
@@ -184,6 +201,13 @@ def run_tool_loop(
 
             last_call_sig = call_sig
             messages.append({"role": "tool", "name": name, "content": _truncate_tool_result(result)})
+
+            # Record what was tried, for skills.py. Skipped repeats aren't
+            # part of a route worth remembering -- they're the loop noticing
+            # it was stuck.
+            if not is_exact_repeat:
+                steps.append({"tool": name, "args": args})
+            last_result_failed = _looks_like_failure(result)
 
             # An exact repeat counts toward the streak too, not just a
             # detected failure -- calling the same thing twice in a row is

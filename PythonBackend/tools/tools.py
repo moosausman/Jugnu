@@ -32,21 +32,113 @@ def close_app(app_name: str) -> str:
     return f"Closed {app_name}" if result.returncode == 0 else f"Could not close: {app_name}"
 
 
-def play_song(song: str, artist: str = "") -> str:
-    """Searches and plays a song on Spotify by song name and artist."""
-    query = f"{song} {artist}".strip()
-    script = f'''
-    tell application "Spotify"
-        activate
-        play track "spotify:search:{query}"
-    end tell
-    '''
-    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-    return (
-        f"Playing '{song}'{f' by {artist}' if artist else ''} on Spotify"
-        if result.returncode == 0
-        else f"Spotify error: {result.stderr.strip()}"
-    )
+def play_song(song: str, artist: str = "") -> dict:
+    """Plays a specific song on Spotify, and confirms it actually started.
+
+    Resolves the name to a real Spotify track, plays it, then reads
+    Spotify's own player state back to verify. Reports the track that is
+    genuinely playing, which may differ slightly from what was asked for
+    (a remaster, a live version) -- say which one if it differs.
+
+    Args:
+        song: The song title, e.g. "Blinding Lights".
+        artist: Optional artist name. Worth giving when the title is
+            common -- it makes the match far more accurate.
+    """
+    from .spotify_service import resolve_track, SpotifyNotConfigured
+
+    try:
+        track = resolve_track(song, artist)
+    except SpotifyNotConfigured as e:
+        return {"ok": False, "error": str(e), "needsSetup": "spotify_credentials"}
+    except LookupError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": f"Couldn't search Spotify: {e}"}
+
+    result = call("/spotify/play-uri", {"uri": track["uri"]}, timeout=30)
+    if result.get("ok"):
+        result["requested"] = {"song": song, "artist": artist}
+        result["resolved"] = {"name": track["name"], "artist": track["artist"],
+                              "album": track["album"]}
+    return result
+
+
+def spotify_search(query: str, limit: int = 5) -> dict:
+    """Searches Spotify's catalogue and returns matching tracks with their URIs.
+
+    Read-only -- nothing plays. Use this when the request is ambiguous and
+    you want to report the options, or to find a URI for spotify_play_uri.
+
+    Args:
+        query: Free text, e.g. "weeknd blinding lights". Field filters work
+            too: 'track:"Hello" artist:"Adele"'.
+        limit: How many results to return, 1-20. Defaults to 5.
+    """
+    from .spotify_service import search_tracks, SpotifyNotConfigured
+    try:
+        return {"ok": True, "results": search_tracks(query, limit)}
+    except SpotifyNotConfigured as e:
+        return {"ok": False, "error": str(e), "needsSetup": "spotify_credentials"}
+    except Exception as e:
+        return {"ok": False, "error": f"Couldn't search Spotify: {e}"}
+
+
+def spotify_play_uri(uri: str) -> dict:
+    """Plays an exact Spotify URI (track, album, or playlist) and verifies it started.
+
+    Args:
+        uri: A real Spotify URI, e.g. "spotify:track:0VjIjW4GlUZAMYd2vXMi3b".
+            Note that "spotify:search:..." is NOT playable -- use play_song
+            or spotify_search to resolve a name to a real URI first.
+    """
+    return call("/spotify/play-uri", {"uri": uri}, timeout=30)
+
+
+def spotify_now_playing() -> dict:
+    """Reports what Spotify is currently playing, and whether it's playing at all.
+
+    Read-only. Returns the track, artist, URI and player state, or says
+    that nothing is loaded.
+    """
+    return call("/spotify/state", timeout=20)
+
+
+def spotify_control(action: str = "", volume: int = -1) -> dict:
+    """Controls Spotify playback: pause, resume, skip, or set the volume.
+
+    Does not need Spotify API credentials -- this drives the desktop app
+    directly. Returns the resulting player state so you can see what
+    actually happened.
+
+    Args:
+        action: One of "play", "pause", "playpause", "next", "previous".
+            Leave empty if you only want to change the volume.
+        volume: Output volume 0-100. Leave at -1 to leave it unchanged.
+    """
+    args: dict[str, Any] = {}
+    if action:
+        args["action"] = action
+    if volume >= 0:
+        args["volume"] = volume
+    if not args:
+        return {"ok": False, "error": "Give an action, a volume, or both."}
+    return call("/spotify/control", args, timeout=25)
+
+
+def list_learned_skills(limit: int = 20) -> dict:
+    """Lists the procedures Jugnu has taught itself by doing tasks successfully.
+
+    Read-only. Each entry is a task it completed, how many steps the working
+    route took, and how often that route has since worked or failed. Use
+    this to answer "what have you learned?" or "do you know how to do X?".
+
+    Args:
+        limit: Maximum number of skills to return, most-used first.
+    """
+    import skills
+    learned = skills.list_skills(limit=limit)
+    return {"ok": True, "count": len(learned), "skills": learned}
 
 
 def save_fact(key: str, value: str) -> str:
@@ -2137,7 +2229,12 @@ _tool_functions = [
     open_app,
     close_app,
     play_song,
+    spotify_search,
+    spotify_play_uri,
+    spotify_now_playing,
+    spotify_control,
     save_fact,
+    list_learned_skills,
     search_web,
     ask_user,
 

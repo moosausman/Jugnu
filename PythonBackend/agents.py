@@ -164,7 +164,9 @@ AGENTS = {
         # review). Wire it in yourself if you want that tradeoff, but it
         # shouldn't be a silent side effect of a tool-routing cleanup.
         tool_names=[
-            "open_app", "close_app", "play_song", "notifications_send",
+            "open_app", "close_app", "notifications_send",
+            "play_song", "spotify_search", "spotify_play_uri",
+            "spotify_now_playing", "spotify_control",
             "clipboard_get", "clipboard_set", "finder_open", "finder_reveal",
             "shortcuts_run",
             "system_get_volume", "system_set_volume", "system_battery",
@@ -189,8 +191,9 @@ AGENTS = {
     ),
     "memory": Agent(
         name="memory",
-        role="Records durable facts about the user for future recall.",
-        tool_names=["save_fact"],
+        role="Records durable facts about the user for future recall, and can "
+             "report which task procedures Jugnu has taught itself.",
+        tool_names=["save_fact", "list_learned_skills"],
         # Already the established "just do it, don't ask" tool everywhere
         # else (see TOOL_RULES in memory.py) -- this just makes that
         # explicit for the autonomous-action path too.
@@ -326,7 +329,7 @@ _INTENTIONALLY_UNASSIGNED = {
 _AUTONOMOUS_SAFE_TOOLS = frozenset({
     "search_web",
     "contacts_search", "contacts_list",
-    "save_fact",
+    "save_fact", "list_learned_skills",
     "geocode_location", "get_weather",
     "wikipedia_search", "wikipedia_summary",
     "nominatim_geocode", "nominatim_reverse_geocode",
