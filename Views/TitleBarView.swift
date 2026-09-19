@@ -63,6 +63,10 @@ struct TitleBarView: View {
             .animation(Theme.Motion.settle, value: lastAssistantMessage)
 
             HStack(spacing: 6) {
+                // A small status dot that pulses while working. Colour and
+                // motion carry the state at a glance, before the word next
+                // to it is read.
+                StatusDot(state: fireflyState)
                 Text("Jugnu")
                     .font(Theme.text(12.5, weight: .semibold))
                     .foregroundStyle(Theme.ink)
@@ -123,4 +127,47 @@ struct TitleBarView: View {
 #Preview {
     TitleBarView(appState: AppState(), showHistory: .constant(false))
         .background(Theme.windowBackground)
+}
+
+
+/// Three-state indicator: steady when idle, pulsing while thinking, dim and
+/// still on an error. Small enough to ignore, present enough to answer
+/// "is it doing anything?" without reading.
+private struct StatusDot: View {
+    let state: FireflyState
+
+    private var color: Color {
+        switch state {
+        case .idle: return Theme.clay.opacity(0.75)
+        case .thinking: return Theme.clay
+        case .error: return Theme.danger
+        }
+    }
+
+    var body: some View {
+        Group {
+            if state == .thinking {
+                // Only spin a clock while there is actually something to
+                // animate. This previously ran at 30fps permanently to
+                // compute a pulse that was zero in every state but this one.
+                TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { timeline in
+                    let t = timeline.date.timeIntervalSinceReferenceDate
+                    let pulse = 0.5 + 0.5 * sin(t * 3.4)
+                    dot(pulse: pulse)
+                }
+            } else {
+                dot(pulse: 0)
+            }
+        }
+        .frame(width: 8, height: 8)
+        .animation(Theme.Motion.settle, value: state)
+    }
+
+    private func dot(pulse: Double) -> some View {
+        Circle()
+            .fill(color)
+            .frame(width: 5.5, height: 5.5)
+            .scaleEffect(1 + 0.30 * pulse)
+            .shadow(color: color.opacity(0.35 + 0.45 * pulse), radius: 2 + 3 * pulse)
+    }
 }

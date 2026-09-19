@@ -33,15 +33,31 @@ struct InputBarView: View {
                 .transition(.opacity)
             }
         }
-        .padding(10)
+        .padding(11)
         .background(Theme.panel)
         .clipShape(RoundedRectangle(cornerRadius: Theme.radiusMedium))
+        // Two strokes: a constant hairline, plus a warm ring that fades in
+        // on focus and slowly breathes while it's there. A static accent
+        // border says "this is selected"; one that breathes says the app is
+        // awake and waiting for you.
         .overlay(
             RoundedRectangle(cornerRadius: Theme.radiusMedium)
-                .stroke(focused ? Theme.borderStrong : Theme.border, lineWidth: 1)
+                .stroke(Theme.border, lineWidth: 1)
         )
-        .shadow(color: Color.black.opacity(focused ? 0.22 : 0.12), radius: focused ? 14 : 8, y: 4)
-        .animation(Theme.Motion.snappy, value: focused)
+        .overlay {
+            if focused {
+                TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { timeline in
+                    let t = timeline.date.timeIntervalSinceReferenceDate
+                    let pulse = 0.5 + 0.5 * sin(t * 1.5)
+                    RoundedRectangle(cornerRadius: Theme.radiusMedium)
+                        .stroke(Theme.clay.opacity(0.35 + 0.30 * pulse), lineWidth: 1.2)
+                        .shadow(color: Theme.clay.opacity(0.18 + 0.16 * pulse), radius: 9)
+                }
+                .transition(.opacity)
+            }
+        }
+        .elevation(focused ? 3 : 1)
+        .animation(Theme.Motion.press, value: focused)
         .animation(Theme.Motion.settle, value: appState.thinking)
         .opacity(appState.thinking ? 0.75 : 1)
         .padding(.horizontal, Theme.Spacing.lg)
@@ -65,8 +81,13 @@ struct InputBarView: View {
 private struct PressableButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.88 : 1)
-            .animation(Theme.Motion.snappy, value: configuration.isPressed)
+            // Spring rather than ease: a press should feel like pushing
+            // something with mass, which means a little overshoot coming
+            // back. Also dips brightness on the way down, so the feedback
+            // survives even where the scale change is subtle.
+            .scaleEffect(configuration.isPressed ? 0.82 : 1)
+            .brightness(configuration.isPressed ? -0.12 : 0)
+            .animation(Theme.Motion.press, value: configuration.isPressed)
     }
 }
 
@@ -80,8 +101,10 @@ private struct ThinkingDots: View {
             ForEach(0..<3, id: \.self) { i in
                 Circle()
                     .fill(Theme.clay)
-                    .frame(width: 4.5, height: 4.5)
-                    .opacity(dotOpacity(for: i))
+                    .frame(width: 5, height: 5)
+                    .scaleEffect(0.62 + 0.38 * dotWave(for: i))
+                    .opacity(0.35 + 0.65 * dotWave(for: i))
+                    .shadow(color: Theme.clay.opacity(0.5 * dotWave(for: i)), radius: 3)
             }
         }
         .frame(width: 24, height: 13)
@@ -92,9 +115,12 @@ private struct ThinkingDots: View {
         }
     }
 
-    private func dotOpacity(for index: Int) -> Double {
+    /// 0...1 travelling wave. Each dot samples the same curve a third of a
+    /// cycle apart, so brightness and size move along the row rather than
+    /// all three blinking together.
+    private func dotWave(for index: Int) -> Double {
         let shifted = (phase + CGFloat(index) * 0.33).truncatingRemainder(dividingBy: 1)
-        return 0.35 + 0.65 * Double(sin(shifted * .pi))
+        return Double(sin(shifted * .pi))
     }
 }
 

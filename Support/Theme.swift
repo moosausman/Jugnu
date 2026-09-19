@@ -80,6 +80,44 @@ enum Theme {
         static let snappy = Animation.easeOut(duration: 0.16)
         static let settle = Animation.easeInOut(duration: 0.32)
         static let breathe = Animation.easeInOut(duration: 6)
+
+        // Springs, for anything that ARRIVES rather than merely changes.
+        // Eased curves decelerate into place with a mathematical evenness
+        // the eye reads as mechanical; a spring overshoots a touch and
+        // settles, which reads as physical. Used for the answer appearing,
+        // history rows entering, and button presses.
+        //
+        // Damping is high enough that nothing visibly wobbles -- the goal
+        // is weight, not bounce.
+
+        /// Content arriving on screen: an answer, a row, a badge.
+        static let arrive = Animation.spring(response: 0.42, dampingFraction: 0.78)
+
+        /// Direct response to a press or hover. Faster, tighter.
+        static let press = Animation.spring(response: 0.26, dampingFraction: 0.68)
+
+        /// Per-line stagger for a multi-line reveal.
+        static func arriveStaggered(_ index: Int, step: Double = 0.028, cap: Int = 14) -> Animation {
+            arrive.delay(Double(min(index, cap)) * step)
+        }
+    }
+
+    // MARK: - Elevation
+    // Two-layer shadows. A single shadow reads as a sticker; a tight dark
+    // contact shadow plus a wide soft ambient one is how real depth looks,
+    // and it's what separates a panel that sits ON the background from one
+    // that floats above it.
+
+    struct Elevation: ViewModifier {
+        var contact: CGFloat
+        var ambient: CGFloat
+        var opacity: Double
+
+        func body(content: Content) -> some View {
+            content
+                .shadow(color: .black.opacity(opacity * 0.55), radius: contact, y: contact * 0.45)
+                .shadow(color: .black.opacity(opacity * 0.35), radius: ambient, y: ambient * 0.35)
+        }
     }
 
     // MARK: - Type
@@ -125,5 +163,17 @@ extension Color {
             blue: Double(hex & 0xFF) / 255,
             opacity: opacity
         )
+    }
+}
+
+extension View {
+    /// Layered depth. `level` 1 is a resting panel, 2 a raised control,
+    /// 3 something actively floating (focused input, hovered card).
+    func elevation(_ level: Int) -> some View {
+        switch level {
+        case 1:  return AnyView(modifier(Theme.Elevation(contact: 4,  ambient: 12, opacity: 0.5)))
+        case 2:  return AnyView(modifier(Theme.Elevation(contact: 7,  ambient: 20, opacity: 0.6)))
+        default: return AnyView(modifier(Theme.Elevation(contact: 11, ambient: 30, opacity: 0.7)))
+        }
     }
 }

@@ -7,7 +7,11 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            BackgroundView()
+            // The backdrop reacts to what Jugnu is doing -- the light field
+            // lifts and quickens while thinking, cools on an error. One
+            // state, read in one place, so the whole window moves together
+            // instead of the firefly animating against a static backdrop.
+            BackgroundView(state: fireflyState)
 
             VStack(spacing: 0) {
                 TitleBarView(appState: appState, showHistory: $showHistory)
@@ -65,6 +69,11 @@ struct ContentView: View {
             }
         )
         .onAppear(perform: launchBackend)
+    }
+
+    private var fireflyState: FireflyState {
+        if appState.errorMessage != nil { return .error }
+        return appState.thinking ? .thinking : .idle
     }
 
     // MARK: - Backend

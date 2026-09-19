@@ -112,6 +112,7 @@ struct FireflyView: View {
         }
         .frame(width: size, height: size)
         .offset(y: bobOffset)
+        .background(MoteSwarm(state: state, size: size, glow: glowColor))
         .onAppear { animate(for: state) }
         .onChange(of: state) { newState in animate(for: newState) }
     }
@@ -166,4 +167,83 @@ struct FireflyView: View {
     FireflyView(state: .thinking, size: 80)
         .padding(40)
         .background(Theme.windowBackground)
+}
+
+
+/// Three small motes orbiting the firefly — the detail that turns a glowing
+/// icon into something that reads as *alive in a space* rather than a shape
+/// with a pulse on it.
+///
+/// Sits BEHIND the firefly (used as a `.background`), so the motes pass
+/// behind the body rather than over it, which is what sells the depth. Each
+/// one rides its own ellipse at its own period, and each leaves a short
+/// fading trail built from a handful of progressively smaller, dimmer
+/// echoes along the path it just travelled.
+///
+/// Driven by a single TimelineView, like BackgroundView, rather than
+/// per-mote repeating state animations: one clock, no phase drift, and it
+/// suspends when the view stops rendering.
+private struct MoteSwarm: View {
+    let state: FireflyState
+    let size: CGFloat
+    let glow: Color
+
+    /// Orbit definitions: (radiusX, radiusY, period, phase).
+    /// Non-harmonic periods so the arrangement never visibly repeats.
+    private static let orbits: [(rx: Double, ry: Double, period: Double, phase: Double)] = [
+        (0.78, 0.46, 6.9,  0.0),
+        (0.58, 0.72, 9.3,  2.1),
+        (0.92, 0.60, 12.7, 4.3),
+    ]
+
+    private var speed: Double {
+        switch state {
+        case .idle: return 1.0
+        case .thinking: return 2.3   // they scatter and hurry while working
+        case .error: return 0.35     // almost still
+        }
+    }
+
+    private var visibility: Double {
+        state == .error ? 0.3 : 1.0
+    }
+
+    private let trailCount = 4
+
+    var body: some View {
+        // 24fps: the motes move fast enough to need more than the
+        // background's 12, but this is a 40pt area -- 30 buys nothing the
+        // eye can see here.
+        TimelineView(.animation(minimumInterval: 1.0 / 24.0)) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate * speed
+            Canvas { ctx, canvas in
+                let cx = canvas.width / 2, cy = canvas.height / 2
+                for orbit in Self.orbits {
+                    for echo in 0..<trailCount {
+                        // Each echo samples the orbit slightly in the past,
+                        // so the trail traces the real path rather than a
+                        // straight smear behind the mote.
+                        let lag = Double(echo) * 0.055
+                        let a = (t - lag) / orbit.period * 2 * .pi + orbit.phase
+                        let x = cx + CGFloat(cos(a) * orbit.rx) * size * 0.5
+                        let y = cy + CGFloat(sin(a) * orbit.ry) * size * 0.5
+
+                        let fade = 1.0 - Double(echo) / Double(trailCount)
+                        let r = size * 0.032 * CGFloat(0.45 + 0.55 * fade)
+                        let rect = CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)
+
+                        ctx.fill(
+                            Path(ellipseIn: rect),
+                            with: .color(glow.opacity(0.55 * fade * fade * visibility))
+                        )
+                    }
+                }
+            }
+            .blendMode(.plusLighter)
+            .blur(radius: size * 0.012)
+        }
+        .frame(width: size * 1.9, height: size * 1.9)
+        .allowsHitTesting(false)
+        .animation(Theme.Motion.settle, value: state)
+    }
 }

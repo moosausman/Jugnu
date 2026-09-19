@@ -4,6 +4,7 @@ struct HeroView: View {
     @ObservedObject var appState: AppState
 
     @State private var didCopy = false
+    @State private var revealed = false
     @State private var copyHovering = false
 
     private var lastUser: String? {
@@ -46,19 +47,10 @@ struct HeroView: View {
         (lastAssistant?.count ?? 0) < 90
     }
 
-    /// Renders the answer as Markdown when it parses, since models
-    /// habitually emit **bold**, `code` and bullet lists, and showing that
-    /// punctuation raw is noise. Falls back to plain text.
-    private var renderedAnswer: AttributedString {
-        let raw = lastAssistant ?? "Jugnu is listening."
-        if let parsed = try? AttributedString(
-            markdown: raw,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
-            return parsed
-        }
-        return AttributedString(raw)
-    }
+    /// Height the scroll content should fill so a short answer can centre
+    /// itself. Read from the enclosing geometry rather than hardcoded, so
+    /// it stays correct at any window size.
+    @State private var availableAnswerHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 14) {
@@ -142,25 +134,79 @@ struct HeroView: View {
     private var answer: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
-                Text(renderedAnswer)
-                    .font(Theme.text(isShortAnswer ? 19 : 14.5,
-                                     weight: isShortAnswer ? .semibold : .regular))
-                    .lineSpacing(Theme.bodyLineSpacing)
-                    .foregroundStyle(Theme.ink)
-                    .multilineTextAlignment(isShortAnswer ? .center : .leading)
-                    .frame(maxWidth: .infinity,
-                           alignment: isShortAnswer ? .center : .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .id("answer-body")
+                // Rendered per line rather than as one Text so each line can
+                // arrive on its own short delay. A whole answer fading in at
+                // once reads as a screen redraw; lines landing in sequence
+                // reads as something being said. The stagger is small (28ms)
+                // and capped, so a 40-line answer still completes fast -- the
+                // effect is a ripple, not a queue you wait on.
+                VStack(alignment: isShortAnswer ? .center : .leading,
+                       spacing: Theme.bodyLineSpacing) {
+                    ForEach(Array(answerLines.enumerated()), id: \.offset) { index, line in
+                        Text(markdown(line))
+                            .font(Theme.text(isShortAnswer ? 19 : 14.5,
+                                             weight: isShortAnswer ? .semibold : .regular))
+                            .foregroundStyle(Theme.ink)
+                            .multilineTextAlignment(isShortAnswer ? .center : .leading)
+                            .frame(maxWidth: .infinity,
+                                   alignment: isShortAnswer ? .center : .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .opacity(revealed ? 1 : 0)
+                            .offset(y: revealed ? 0 : 9)
+                            .blur(radius: revealed ? 0 : 2.5)
+                            .animation(Theme.Motion.arriveStaggered(index), value: revealed)
+                    }
+                }
+                .id("answer-body")
+                .padding(.trailing, 20)   // clear of the copy button
+                // A short answer centres itself in whatever height is
+                // available; a long one starts at the top and scrolls.
+                // Without this the layout only looked composed at the
+                // minimum window size -- resize taller and a one-line reply
+                // clung to the top edge with a large void under it.
+                .frame(minHeight: isShortAnswer ? availableAnswerHeight : 0,
+                       alignment: isShortAnswer ? .center : .top)
             }
             .frame(maxHeight: .infinity)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.onAppear { availableAnswerHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { _, h in availableAnswerHeight = h }
+                }
+            )
             .onChange(of: lastAssistant) { _, _ in
-                // A new answer starts at the top, not wherever the previous
-                // one was scrolled to.
                 proxy.scrollTo("answer-body", anchor: .top)
+                // Drop to hidden without animation, then let the staggered
+                // animation above carry it back in. Animating the reset too
+                // would make lines fade out and back rather than arrive.
+                var t = Transaction(); t.disablesAnimations = true
+                withTransaction(t) { revealed = false }
+                DispatchQueue.main.async { revealed = true }
             }
+            .onAppear { revealed = true }
         }
         .overlay(alignment: .topTrailing) { copyButton }
+        // While Jugnu is working, a slow warm sheen travels down the answer
+        // area. It's the "something is happening here" signal in the place
+        // the user is already looking, rather than only in the input bar.
+        .overlay {
+            if appState.thinking { ThinkingSheen() }
+        }
+    }
+
+    /// Split for the staggered reveal. Blank lines are preserved so
+    /// paragraph breaks survive, but collapsed to a single spacer row.
+    private var answerLines: [String] {
+        let raw = lastAssistant ?? "Jugnu is listening."
+        let lines = raw.components(separatedBy: .newlines)
+        return lines.isEmpty ? [raw] : lines
+    }
+
+    private func markdown(_ line: String) -> AttributedString {
+        (try? AttributedString(
+            markdown: line,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(line)
     }
 
     @ViewBuilder
@@ -223,4 +269,30 @@ struct HeroView: View {
     HeroView(appState: AppState())
         .frame(width: 420, height: 380)
         .background(Theme.windowBackground)
+}
+
+
+/// A slow warm sheen that travels down whatever it overlays, while Jugnu is
+/// working. Deliberately low-contrast and slow — a sign of life in the
+/// place the eye is already resting, not a progress bar demanding attention.
+private struct ThinkingSheen: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            let phase = (t / 2.6) - (t / 2.6).rounded(.down)
+
+            GeometryReader { geo in
+                LinearGradient(
+                    colors: [.clear, Theme.clay.opacity(0.13), .clear],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .frame(height: geo.size.height * 0.45)
+                .offset(y: geo.size.height * (-0.45 + 1.45 * phase))
+                .blur(radius: 14)
+            }
+        }
+        .blendMode(.plusLighter)
+        .allowsHitTesting(false)
+        .transition(.opacity)
+    }
 }
