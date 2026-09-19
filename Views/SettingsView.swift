@@ -30,24 +30,29 @@ struct SettingsView: View {
             }
             .padding(Theme.Spacing.xl)
         }
-        .frame(width: 480, height: 600)
+        // 620x680, up from 480x600. Seven sections at the old size meant
+        // most of the window was always off-screen; the Restart button that
+        // makes any change take effect sat below the fold, unseen.
+        .frame(width: 620, height: 680)
         .background(Theme.windowBackground)
         .foregroundStyle(Theme.ink)
     }
 
     // MARK: - Header
 
+    // The window's own title bar already says "Jugnu Settings", so repeating
+    // it here was the first thing in the content area telling you something
+    // you'd just read. Replaced with the one line that IS worth leading on:
+    // nothing takes effect until the backend restarts.
     private var header: some View {
         HStack(spacing: 10) {
-            FireflyView(state: .idle, size: 28)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Jugnu Settings")
-                    .font(Theme.mono(15, weight: .semibold))
-                Text("Changes take effect after restarting the backend, below.")
-                    .font(Theme.mono(10.5))
-                    .foregroundStyle(Theme.inkFaint)
-            }
+            FireflyView(state: .idle, size: 26)
+            Text("Changes apply when you restart the backend at the bottom of this window.")
+                .font(Theme.text(12))
+                .foregroundStyle(Theme.inkDim)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .padding(.bottom, 2)
     }
 
     // MARK: - Model
@@ -70,6 +75,7 @@ struct SettingsView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .tint(Theme.clay)
 
             if settings.provider == .local {
                 localModelFields
@@ -89,6 +95,7 @@ struct SettingsView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .tint(Theme.clay)
 
             if settings.embedProvider == .local {
                 SettingsTextRow(label: "Embedding model", text: $settings.embedModel, placeholder: "nomic-embed-text")
@@ -118,8 +125,8 @@ struct SettingsView: View {
                 placeholder: "leave blank to use the Agent model",
                 helpText: "Rewrites and reasons over web search results specifically. Optional -- falls back to Agent."
             )
-            Text("Pulled via `ollama pull <model>` -- these are Ollama model tags, not filenames.")
-                .font(Theme.mono(10))
+            Text("Pulled via `ollama pull <model>` — these are Ollama model tags, not filenames.")
+                .font(Theme.text(10.5))
                 .foregroundStyle(Theme.inkFaint)
         }
     }
@@ -137,8 +144,9 @@ struct SettingsView: View {
 
             Toggle("Use a different model per role", isOn: $showAPIRoleOverrides.animation(Theme.Motion.snappy))
                 .toggleStyle(.checkbox)
-                .font(Theme.mono(11))
+                .font(Theme.text(12))
                 .foregroundStyle(Theme.inkDim)
+                .tint(Theme.clay)
 
             if showAPIRoleOverrides {
                 SettingsTextRow(
@@ -242,7 +250,7 @@ struct SettingsView: View {
                 Button("Reveal in Finder") { SettingsStore.revealDataDirectory() }
                     .buttonStyle(.plain)
                     .foregroundStyle(Theme.clay)
-                    .font(Theme.mono(11))
+                    .font(Theme.text(11.5, weight: .medium))
             }
 
             Divider().overlay(Theme.border)
@@ -266,11 +274,11 @@ struct SettingsView: View {
             Button("Clear This Conversation…") { appState.clear() }
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.danger)
-                .font(Theme.mono(11.5))
+                .font(Theme.text(12, weight: .medium))
 
             if let feedback = appState.settingsFeedback {
                 Text(feedback)
-                    .font(Theme.mono(10.5, weight: .medium))
+                    .font(Theme.text(11.5, weight: .medium))
                     .foregroundStyle(Theme.clay)
                     .transition(.opacity)
             }
@@ -294,12 +302,12 @@ struct SettingsView: View {
     private func aboutRow(_ label: String, _ value: String) -> some View {
         HStack {
             Text(label)
-                .font(Theme.mono(11))
-                .foregroundStyle(Theme.inkFaint)
+                .font(Theme.text(11.5))
+                .foregroundStyle(Theme.inkDim)
             Spacer()
             Text(value)
                 .font(Theme.mono(11))
-                .foregroundStyle(Theme.inkDim)
+                .foregroundStyle(Theme.ink)
         }
     }
 
@@ -310,7 +318,7 @@ struct SettingsView: View {
             Spacer()
             Button(action: { appState.restartBackend() }) {
                 Text("Restart Backend to Apply")
-                    .font(Theme.mono(12, weight: .semibold))
+                    .font(Theme.text(13, weight: .semibold))
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
             }
@@ -341,13 +349,18 @@ private struct SettingsSection<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            Text(title)
-                .font(Theme.mono(12, weight: .semibold))
+            Text(title.uppercased())
+                .font(Theme.text(10.5, weight: .semibold))
+                .tracking(0.8)
                 .foregroundStyle(Theme.clay)
             if let description {
+                // inkDim, not inkFaint. At 0.42 opacity these explanations
+                // were dimmer than the disabled-control text beneath them.
                 Text(description)
-                    .font(Theme.mono(10.5))
-                    .foregroundStyle(Theme.inkFaint)
+                    .font(Theme.text(11.5))
+                    .foregroundStyle(Theme.inkDim)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
                 content
@@ -368,11 +381,12 @@ private struct SettingsToggleRow: View {
         Toggle(isOn: $isOn) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(Theme.mono(11.5, weight: .medium))
+                    .font(Theme.text(12.5, weight: .medium))
                     .foregroundStyle(Theme.ink)
                 Text(description)
-                    .font(Theme.mono(10))
-                    .foregroundStyle(Theme.inkFaint)
+                    .font(Theme.text(11))
+                    .foregroundStyle(Theme.inkDim)
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -387,21 +401,44 @@ private struct SettingsTextRow: View {
     var placeholder: String = ""
     var helpText: String? = nil
 
+    @State private var focused = false
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(label)
-                .font(Theme.mono(10.5))
-                .foregroundStyle(Theme.inkFaint)
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.plain)
-                .font(Theme.mono(11.5))
-                .foregroundStyle(Theme.ink)
-                .padding(6)
-                .background(RoundedRectangle(cornerRadius: Theme.radiusSmall).fill(Theme.windowBackground))
+                .font(Theme.text(11, weight: .medium))
+                .foregroundStyle(Theme.inkDim)
+
+            // Values stay monospace on purpose -- an API base URL or a model
+            // tag is checked character by character, which is exactly what
+            // monospace is good for.
+            //
+            // The API base URL used to run straight off the right edge of
+            // this field with nothing to indicate it: the visible text just
+            // stopped mid-domain, so you couldn't tell a correct endpoint
+            // from a truncated one. A horizontal ScrollView lets a long
+            // value be read in full without forcing the window wider, and
+            // the focus ring makes it obvious which field is live.
+            ScrollView(.horizontal, showsIndicators: false) {
+                TextField(placeholder, text: $text)
+                    .textFieldStyle(.plain)
+                    .font(Theme.mono(11.5))
+                    .foregroundStyle(Theme.ink)
+                    .frame(minWidth: 420, alignment: .leading)
+            }
+            .padding(7)
+            .background(RoundedRectangle(cornerRadius: Theme.radiusSmall).fill(Theme.windowBackground))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radiusSmall)
+                    .stroke(focused ? Theme.borderStrong : Theme.border, lineWidth: 1)
+            )
+            .onTapGesture { focused = true }
+
             if let helpText {
                 Text(helpText)
-                    .font(Theme.mono(9.5))
+                    .font(Theme.text(10.5))
                     .foregroundStyle(Theme.inkFaint)
+                    .lineSpacing(1.5)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -426,10 +463,12 @@ private struct ResetRow: View {
             Button(title) { confirming = true }
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.danger)
-                .font(Theme.mono(11.5))
+                .font(Theme.text(12, weight: .medium))
             Text(description)
-                .font(Theme.mono(10))
-                .foregroundStyle(Theme.inkFaint)
+                .font(Theme.text(11))
+                .foregroundStyle(Theme.inkDim)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .confirmationDialog(confirmTitle, isPresented: $confirming, titleVisibility: .visible) {
             Button(title.replacingOccurrences(of: "…", with: ""), role: .destructive) { action() }
@@ -447,14 +486,23 @@ private struct SettingsSecureRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label)
-                .font(Theme.mono(10.5))
-                .foregroundStyle(Theme.inkFaint)
+                .font(Theme.text(11, weight: .medium))
+                .foregroundStyle(Theme.inkDim)
             SecureField("", text: $text)
                 .textFieldStyle(.plain)
                 .font(Theme.mono(11.5))
                 .foregroundStyle(Theme.ink)
-                .padding(6)
+                .padding(7)
                 .background(RoundedRectangle(cornerRadius: Theme.radiusSmall).fill(Theme.windowBackground))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusSmall)
+                        .stroke(Theme.border, lineWidth: 1)
+                )
+            Text(text.isEmpty
+                 ? "Not set. Stored in your Keychain, never in preferences or in Jugnu's own environment."
+                 : "Stored in your Keychain.")
+                .font(Theme.text(10.5))
+                .foregroundStyle(Theme.inkFaint)
         }
     }
 }

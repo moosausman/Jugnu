@@ -11,9 +11,9 @@ struct InputBarView: View {
                 .foregroundStyle(Theme.clay)
                 .font(.system(size: 14, design: .monospaced))
 
-            TextField("Ask Jugnu anything…", text: $text)
+            TextField(appState.thinking ? "Jugnu is working…" : "Ask Jugnu anything…", text: $text)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13, design: .monospaced))
+                .font(Theme.text(13))
                 .foregroundStyle(Theme.ink)
                 .focused($focused)
                 .disabled(appState.thinking)

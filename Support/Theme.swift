@@ -45,7 +45,14 @@ enum Theme {
     // size.
 
     enum WindowSize {
-        static let min = CGSize(width: 360, height: 420)
+        // 360x420 was sized for the old layout, where the answer was capped
+        // at six lines and anything longer was simply cut off -- so the
+        // window never needed room for more. Now that answers scroll and
+        // wrap, the constraint is reading comfort: 400pt of width is about
+        // 60 characters at the body size, which is a sensible measure, and
+        // the extra height buys roughly four more lines before scrolling.
+        // Still a quick-access panel, not a document window.
+        static let min = CGSize(width: 400, height: 520)
     }
 
     // MARK: - Spacing
@@ -76,10 +83,35 @@ enum Theme {
     }
 
     // MARK: - Type
+    //
+    // Two families, used for different jobs.
+    //
+    // Everything used to be `mono`, including paragraphs of explanation in
+    // Settings and Jugnu's actual answers. Monospace is a poor choice for
+    // prose -- uniform advance widths remove the word-shape cues people read
+    // by, so it scans noticeably slower and looks like terminal output rather
+    // than something written for you.
+    //
+    // `text` is for anything meant to be READ: answers, descriptions, labels.
+    // `mono` stays for anything meant to be INSPECTED, where character
+    // alignment and unambiguous glyphs matter: model tags, file paths, shell
+    // commands, tool names. Keeping the monospace accent there preserves the
+    // app's character without paying for it in legibility.
 
+    /// Prose. Use for anything the user reads as language.
+    static func text(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight)
+    }
+
+    /// Technical values. Use for model tags, paths, commands, tool names.
     static func mono(_ size: CGFloat, weight: Font.Weight = .medium) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
+
+    // MARK: - Reading measure
+    // Line spacing that suits body text at the sizes used here. Tight
+    // leading is fine for a label and actively unpleasant for a paragraph.
+    static let bodyLineSpacing: CGFloat = 4.5
 }
 
 // If your project already defines `Color(hex:)` elsewhere, delete this

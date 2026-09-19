@@ -16,7 +16,7 @@ struct HistoryView: View {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 11, weight: .semibold))
                         Text("Back")
-                            .font(Theme.mono(12))
+                            .font(Theme.text(12.5, weight: .medium))
                     }
                 }
                 .buttonStyle(.plain)
@@ -34,7 +34,7 @@ struct HistoryView: View {
                     // any other irreversible, destructive action should.
                     Button(action: { confirmingClear = true }) {
                         Text("Clear")
-                            .font(Theme.mono(11))
+                            .font(Theme.text(12, weight: .medium))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(clearHovering ? Theme.danger : Theme.inkFaint)
@@ -67,7 +67,7 @@ struct HistoryView: View {
                         VStack(spacing: 12) {
                             FireflyView(state: .idle, size: 40)
                             Text("nothing said yet")
-                                .font(Theme.mono(11.5))
+                                .font(Theme.text(12))
                                 .foregroundStyle(Theme.inkFaint)
                         }
                         .frame(maxWidth: .infinity)
@@ -144,7 +144,7 @@ private struct HistoryRow: View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(who)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .font(Theme.text(11.5, weight: .semibold))
                     .foregroundStyle(whoColor)
 
                 if let glyph = originGlyph {
@@ -152,7 +152,7 @@ private struct HistoryRow: View {
                         Image(systemName: glyph.icon)
                             .font(.system(size: 7.5, weight: .bold))
                         Text(glyph.label)
-                            .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                            .font(Theme.text(9, weight: .semibold))
                     }
                     .foregroundStyle(Theme.clay)
                 }
@@ -160,7 +160,10 @@ private struct HistoryRow: View {
             .frame(width: 46, alignment: .leading)
 
             Text(message.content)
-                .font(.system(size: message.role == .tool ? 10.5 : 12.5, design: .monospaced))
+                // Tool calls stay monospace -- they're JSON you inspect.
+                // Conversation is prose and reads as prose.
+                .font(message.role == .tool ? Theme.mono(10.5) : Theme.text(12.5))
+                .lineSpacing(message.role == .tool ? 1 : 3)
                 .foregroundStyle(textColor)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)

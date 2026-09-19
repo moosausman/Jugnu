@@ -64,14 +64,21 @@ struct TitleBarView: View {
 
             HStack(spacing: 6) {
                 Text("Jugnu")
-                    .font(Theme.mono(12, weight: .semibold))
+                    .font(Theme.text(12.5, weight: .semibold))
                     .foregroundStyle(Theme.ink)
                 Text("·")
-                    .font(Theme.mono(12))
+                    .font(Theme.text(12))
                     .foregroundStyle(Theme.inkFaint)
+                // The status label is the one place a long agent/tool name
+                // can appear ("whatsapp: open the chat with..."), and it
+                // used to push the history button off the edge. Bounded and
+                // truncated, with the full text in the tooltip.
                 Text(appState.statusLabel.lowercased())
-                    .font(Theme.mono(12))
-                    .foregroundStyle(Theme.inkDim)
+                    .font(Theme.text(12))
+                    .foregroundStyle(appState.errorMessage != nil ? Theme.danger : Theme.inkDim)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 170, alignment: .leading)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
@@ -97,12 +104,14 @@ struct TitleBarView: View {
             .keyboardShortcut("y", modifiers: .command)
             .help("Conversation history (⌘Y)")
         }
-        .padding(.horizontal, Theme.Spacing.lg)
-        .padding(.top, 14)
-        // Leaves room for the native traffic-light buttons, which live at the
-        // window's top-left in a titlebarAppearsTransparent window.
-        .padding(.leading, 56)
-        .frame(height: 30)
+        .padding(.trailing, Theme.Spacing.lg)
+        .padding(.top, 13)
+        // Clears the native traffic lights, which sit at the window's
+        // top-left in a titlebarAppearsTransparent window. 72pt total was
+        // measurably more than they occupy and left a visible dead gutter
+        // between them and the app name.
+        .padding(.leading, 74)
+        .frame(height: 28)
     }
 
     private var fireflyState: FireflyState {
