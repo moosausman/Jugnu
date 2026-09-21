@@ -258,3 +258,37 @@ def describe_change(prev: "Snapshot | None", curr: "Snapshot") -> str:
     if not significant_change(prev, curr):
         return ""
     return f"The user just switched from {prev.frontmost_app} to {curr.frontmost_app}."
+
+
+# --- the Jugnu account's desktop -----------------------------------------
+# Everything above reads the login this process runs in -- the user's own
+# screen. When work happens in the dedicated agent account (see
+# tools/macbridge.py), that tells the model nothing about the desktop it is
+# actually driving, so this asks that session's MacBridge directly.
+
+def agent_desktop_block() -> str:
+    """What's frontmost and open in the agent account's session, or "" when
+    that session isn't running. Best-effort, like everything here."""
+    if not AWARENESS_ENABLED:
+        return ""
+    try:
+        from tools.macbridge import call, session_available
+        if not session_available("agent"):
+            return ""
+        front = call("/keyboard/frontmost", timeout=3, session="agent")
+        apps = call("/ui/apps", timeout=3, session="agent")
+    except Exception as e:
+        log(f"agent desktop read failed: {e}")
+        return ""
+    lines = []
+    if front.get("ok") and front.get("name"):
+        lines.append(f"Active app: {front['name']}")
+    names = [a.get("name") for a in apps.get("apps", []) if a.get("name")]
+    others = [n for n in names if n != front.get("name")]
+    if others:
+        lines.append(f"Also open: {', '.join(others[:15])}")
+    if not lines:
+        lines.append("Nothing open yet.")
+    return ("The Jugnu account's desktop (separate login -- not what the user "
+            "is looking at unless they switch to it):\n"
+            + "\n".join(f"- {l}" for l in lines))

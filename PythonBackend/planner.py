@@ -20,7 +20,10 @@ import sys
 import llm_client
 
 from agents import AGENTS, agent_capabilities_block
-from memory import date_block, facts_as_string, IDENTITY, SITUATIONAL_AWARENESS
+from memory import (
+    date_block, facts_as_string, IDENTITY, SITUATIONAL_AWARENESS,
+    DEFAULT_SESSION, agent_session_live,
+)
 
 MAX_TASKS = 8
 
@@ -39,6 +42,25 @@ def _planner_system_prompt() -> str:
         '"depends_on": []}]}'
     )
     clarify_example = '{"clarify": "<one direct question>"}'
+
+    session_block = ""
+    if agent_session_live():
+        default = "agent" if DEFAULT_SESSION == "agent" else "primary"
+        schema_example = schema_example[:-1] + ', "session": "agent" | "primary"}'
+        session_block = f"""
+Which desktop: this Mac has two logins. "agent" is the Jugnu account -- a
+separate macOS user you fully control, which the user switches to when they
+want to check progress. "primary" is the user's own account, with their
+files, windows and logins. Set "session" for the whole plan:
+- "agent" when they ask for it ("on the Jugnu account", "in your account",
+  "on your desktop", "run it over there", "in the background so I can
+  check later"), or for self-contained work that doesn't need their data.
+- "primary" when the request is about THEIR things ("my files", "my
+  Desktop", "my Chrome", "the window I have open", "on my account").
+- Otherwise use the default: "{default}".
+The two accounts share nothing but /Users/Shared -- a task that needs the
+user's files can't be done in the Jugnu account unless they're copied there.
+"""
 
     return f"""{IDENTITY}
 
@@ -63,6 +85,7 @@ Agents available:
   recap, or review of their day. Not for a question about one specific
   app, search, or reminder.
 
+{session_block}
 Respond with exactly ONE raw JSON object and nothing else -- no markdown
 fences, no commentary, no explanation before or after.
 
@@ -97,10 +120,12 @@ class Task:
 
 
 class Plan:
-    def __init__(self, goal, tasks, clarify=None):
+    def __init__(self, goal, tasks, clarify=None, session=None):
         self.goal = goal
         self.tasks = tasks
         self.clarify = clarify
+        # "agent" / "primary", or None for the default. See session.run_turn.
+        self.session = session
 
     @property
     def needs_clarification(self) -> bool:
@@ -203,7 +228,11 @@ def _validate(data: dict, goal_fallback: str) -> Plan:
             if dep not in seen_ids:
                 raise ValueError(f"task {t.id} depends on unknown task {dep}")
 
-    return Plan(goal=data.get("goal", goal_fallback), tasks=tasks)
+    session = data.get("session")
+    if session not in (None, "", "agent", "primary"):
+        raise ValueError(f'session must be "agent" or "primary", not {session!r}')
+
+    return Plan(goal=data.get("goal", goal_fallback), tasks=tasks, session=session or None)
 
 
 def make_plan(goal: str, recent_context: str = "", retries: int = 1) -> Plan:

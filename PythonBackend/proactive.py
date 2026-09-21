@@ -155,6 +155,9 @@ def _do_and_report(agent_name: str, task_description: str, why: str) -> "str | N
     planned task would -- then reports what happened. Only ever reached
     for agents.py's autonomous_safe agents; see _act_on_decision."""
     task = Task(id=1, agent=agent_name, description=task_description)
+    # Start from the default session, not wherever the last turn left it.
+    from tools.macbridge import reset_session
+    reset_session()
     try:
         result = run_task(task, shared_memory={})
     except Exception as e:

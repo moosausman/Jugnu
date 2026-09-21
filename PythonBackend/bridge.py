@@ -144,6 +144,7 @@ sys.path.insert(0, ROOT)
 
 import llm_client
 from tools.tools import SCHEMAS
+from tools import macbridge
 from memory import (
     load_conversation, clear_conversation, clear_facts,
     persona_system_prompt, facts_as_string, APP_SUPPORT_DIR,
@@ -201,6 +202,7 @@ def handle_send(conversation: list, request_id: str, text: str) -> None:
                 "type": "plan",
                 "id": request_id,
                 "goal": plan.goal,
+                "session": macbridge.active_session(),
                 "tasks": [t.to_dict() for t in plan.tasks],
             })
 

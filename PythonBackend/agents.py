@@ -286,6 +286,15 @@ AGENTS = {
     ),
 }
 
+# Every agent whose tools go through MacBridge acts in whichever login is
+# active, so each one needs to be able to see and change it -- not just the
+# desktop agents. Otherwise a files task meant for the Jugnu account has no
+# way to confirm or correct where it's working.
+for _name in ("calendar", "files", "mail", "browser"):
+    for _tool in _SESSION_TOOL_NAMES:
+        if _tool not in AGENTS[_name].tool_names:
+            AGENTS[_name].tool_names.append(_tool)
+
 # Every task-executing agent can also quietly bank a fact it stumbles across
 # mid-task (e.g. the research agent notices the user's favorite team) --
 # that's cheap and side-effect-free, unlike letting every agent touch the

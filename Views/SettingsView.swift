@@ -203,6 +203,11 @@ struct SettingsView: View {
                 isOn: $settings.quietModeEnabled
             )
             SettingsToggleRow(
+                title: "Work in the Jugnu account",
+                description: "Does desktop work -- apps, Terminal, files -- in the separate Jugnu macOS user instead of yours, so it never takes over your screen. Switch to that user to watch progress. Any request can still say \"on my account\" or \"on the Jugnu account\" to override this. The Jugnu user has to be logged in (it keeps running after you switch back).",
+                isOn: $settings.useAgentAccountByDefault
+            )
+            SettingsToggleRow(
                 title: "Situational awareness",
                 description: "Lets Jugnu see which app and window are frontmost, so \"close this\" resolves to something real.",
                 isOn: $settings.situationalAwarenessEnabled

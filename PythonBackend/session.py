@@ -27,6 +27,7 @@ from planner import make_plan, Plan
 from executor import execute_plan
 import awareness as aware
 import semantic_memory as smem
+from tools import macbridge
 
 
 def build_context(conversation: list, user_text: str) -> str:
@@ -37,6 +38,7 @@ def build_context(conversation: list, user_text: str) -> str:
     context = recent_transcript(conversation)
     extra_context = "\n\n".join(filter(None, [
         aware.as_prompt_block(),
+        aware.agent_desktop_block(),
         smem.relevant_memories_as_string(user_text),
         smem.get_habit_summary(),
     ]))
@@ -75,6 +77,17 @@ def run_turn(
     smem.record_event("user_message", user_text)
     plan = make_plan(user_text, recent_context=full_context)
 
+    # Every turn starts from the default session; the plan may pick the
+    # other one. Without the reset, one "do it on my account" would stick
+    # for every later request, including ones meant for the Jugnu account.
+    macbridge.reset_session()
+    if plan.session and not plan.needs_clarification:
+        if not macbridge.session_available(plan.session):
+            answer = _session_unavailable_message(plan.session)
+            _finish(conversation, answer)
+            return answer
+        macbridge.set_active_session(plan.session)
+
     if on_plan and not plan.needs_clarification:
         on_plan(plan)
 
@@ -97,10 +110,24 @@ def run_turn(
         on_tool_result=on_tool_result,
     )
 
+    _finish(conversation, answer)
+    return answer
+
+
+def _finish(conversation: list, answer: str) -> None:
     conversation.append({"role": "assistant", "content": answer})
     smem.record_event("assistant_message", answer)
     save_conversation(conversation)
-    return answer
+
+
+def _session_unavailable_message(name: str) -> str:
+    # Refuse rather than quietly doing the work on the other desktop -- the
+    # user would believe it happened somewhere it didn't.
+    if name == "agent":
+        return ("The Jugnu account isn't running, so I haven't started. Log into it "
+                "once (menu bar user icon > Jugnu), then switch back -- it keeps "
+                "running in the background.")
+    return "MacBridge isn't running in your account, so I haven't started."
 
 
 def append_proactive_message(conversation: list, message: str) -> None:

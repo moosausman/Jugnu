@@ -1,4 +1,5 @@
 import os
+import time
 
 import requests
 from typing import Any, Dict, Optional
@@ -19,9 +20,11 @@ from typing import Any, Dict, Optional
 #                    services into that session via `launchctl bootstrap
 #                    gui/<uid>`.
 #
-# The agent session is the default: work happens on its desktop, not over
-# the top of whatever you are doing. Saying "on my account" switches a
-# request to the primary session -- see set_target_session in tools.py.
+# Which one is the default comes from JUGNU_DEFAULT_SESSION (the Settings
+# toggle "Work in the Jugnu account"). Either way, each request can name
+# the other one ("do this on the Jugnu account" / "on my account") -- the
+# planner picks the session per turn, and set_target_session switches
+# mid-task.
 SESSIONS = {
     "primary": os.environ.get("MACBRIDGE_URL", "http://localhost:8765"),
     "agent": os.environ.get("MACBRIDGE_AGENT_URL", "http://localhost:8766"),
@@ -47,6 +50,15 @@ def set_active_session(name: str) -> str:
     return name
 
 
+def reset_session() -> str:
+    """Back to DEFAULT_SESSION. Called at the start of every turn, so a
+    one-off "do this on my account" doesn't silently stick for every
+    request after it."""
+    global _active_session
+    _active_session = DEFAULT_SESSION
+    return _active_session
+
+
 def session_url(name: str | None = None) -> str:
     return SESSIONS[name or _active_session]
 
@@ -59,11 +71,22 @@ def session_available(name: str) -> bool:
     a request silently landing in the wrong session would be worse than a
     clear failure.
     """
+    now = time.monotonic()
+    cached = _availability_cache.get(name)
+    if cached and now - cached[0] < _AVAILABILITY_TTL:
+        return cached[1]
     try:
-        r = requests.get(SESSIONS[name] + "/health", timeout=2)
-        return r.ok
+        ok = requests.get(SESSIONS[name] + "/health", timeout=2).ok
     except Exception:
-        return False
+        ok = False
+    _availability_cache[name] = (now, ok)
+    return ok
+
+
+# Checked when building every prompt and every turn's context, so a short
+# cache keeps that to one /health round trip per session every few seconds.
+_AVAILABILITY_TTL = 10.0
+_availability_cache: dict = {}
 
 
 # Kept as a module attribute for anything that still reads it directly.

@@ -137,29 +137,50 @@ them their place in it.
 - This changes HOW you work, never WHAT you report. Say plainly what you
   did and what you found, the same as always."""
 
-# Which macOS login desktop work happens in. Only meaningful once the agent
-# account has been provisioned AND logged in -- see tools/macbridge.py.
-# Defaults to "primary" so nothing changes until that's actually set up.
+# Which macOS login desktop work happens in -- see tools/macbridge.py.
+# "agent" is the dedicated Jugnu account (a separate macOS user with its own
+# desktop, files and logins); "primary" is the user's own login.
 DEFAULT_SESSION = os.environ.get("JUGNU_DEFAULT_SESSION", "primary")
+AGENT_USER = os.environ.get("JUGNU_AGENT_USER", "jugnu")
 
-SESSION_RULES = """━━━ WHICH DESKTOP ━━━
-There are two macOS logins available, each with its own desktop, windows
-and running apps. You are currently defaulting to the AGENT session: a
-dedicated account whose screen is not the one the user is looking at.
 
-- Work in the agent session by default. That is the point of it — tasks
-  happen on its desktop instead of on top of whatever the user is doing.
-- Switch with set_target_session("primary") when the request is about
-  THEIR machine: "on my account", "in my Chrome", "open it here", "the
-  window I have open", or anything referring to what they can currently
-  see. Switch before acting, not after.
-- Files, apps and logins are NOT shared between the two. A file written in
-  the agent session is not on the user's Desktop; an app logged in there is
-  a different login. If a task needs their actual data, it belongs in the
-  primary session — say so rather than doing it in the wrong place.
-- current_session() reports where you are and which sessions are live.
-  If a switch is refused because a session isn't responding, report that
-  plainly; do not silently do the work in the other one."""
+def agent_session_live() -> bool:
+    """Whether the Jugnu account is logged in with its MacBridge answering.
+    The session rules below are only worth including when it is."""
+    try:
+        from tools.macbridge import session_available
+        return session_available("agent")
+    except Exception:
+        return False
+
+
+def session_rules() -> str:
+    default = ("the JUGNU ACCOUNT (agent session)" if DEFAULT_SESSION == "agent"
+               else "the USER'S OWN account (primary session)")
+    return f"""━━━ WHICH DESKTOP ━━━
+This Mac has two logins you can work in, each with its own desktop, windows,
+apps, files and logins:
+- "agent"   -- the Jugnu account: a separate macOS user that is yours to run.
+  You have full control of it -- shell, files, apps, keyboard, mouse,
+  screen. The user checks on it by switching to that user.
+- "primary" -- the user's own account, with their files and open windows.
+The session for this request is already set before you start (default:
+{default}). current_session() tells you which one is active.
+- Work in the Jugnu account when asked to ("on the Jugnu account", "in your
+  account", "on your desktop", "in the background where I can check later").
+- Work in the primary session when the request is about THEIR things: "my
+  files", "my Desktop", "my Chrome", "the window I have open".
+- Switch mid-task with set_target_session only when the task itself calls
+  for the other session. Never silently do work in a different session than
+  the one asked for; if the one asked for isn't responding, say so.
+- Nothing is shared between the two: a file written in the Jugnu account is
+  in /Users/{AGENT_USER}, not the user's home. To hand something over, put it in
+  /Users/Shared, which both accounts can read.
+- In the Jugnu account, the quiet-work rule does NOT apply -- that screen is
+  yours, and the user switches over to watch progress. Open apps and
+  windows freely there, and run long jobs visibly (shell_stage in Terminal)
+  so progress can be seen, then confirm results with shell_run."""
+
 
 CORE_BEHAVIOR = """━━━ CORE BEHAVIOUR ━━━
 
@@ -535,10 +556,10 @@ def agent_system_prompt(agent_name: str, facts: str = "") -> str:
     if QUIET_MODE:
         parts.append(QUIET_OPERATION)
 
-    # Only when a second session is actually in play. Describing two
-    # desktops to a model that only has one is worse than saying nothing.
-    if DEFAULT_SESSION == "agent":
-        parts.append(SESSION_RULES)
+    # Only when the Jugnu account is actually logged in. Describing two
+    # desktops to a model that can only reach one is worse than saying nothing.
+    if agent_session_live():
+        parts.append(session_rules())
 
     rules = TOOL_RULES.get(agent_name)
 

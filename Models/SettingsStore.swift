@@ -106,6 +106,11 @@ final class SettingsStore: ObservableObject {
     /// work at all.
     @Published var quietModeEnabled: Bool { didSet { defaults.set(quietModeEnabled, forKey: Keys.quietMode) } }
 
+    /// Do desktop work in the dedicated Jugnu macOS account (its own login,
+    /// reached through a second MacBridge on :8766) instead of the user's.
+    /// Either way a single request can name the other one. Off by default.
+    @Published var useAgentAccountByDefault: Bool { didSet { defaults.set(useAgentAccountByDefault, forKey: Keys.agentAccountDefault) } }
+
     @Published var situationalAwarenessEnabled: Bool { didSet { defaults.set(situationalAwarenessEnabled, forKey: Keys.awareness) } }
     @Published var activityTrackingEnabled: Bool { didSet { defaults.set(activityTrackingEnabled, forKey: Keys.activityTracking) } }
     @Published var includeBrowserHistoryInReview: Bool { didSet { defaults.set(includeBrowserHistoryInReview, forKey: Keys.browserHistory) } }
@@ -150,6 +155,7 @@ final class SettingsStore: ObservableObject {
         static let spotifyClientID = "settings.spotifyClientID"
         static let spotifyClientSecret = "spotifyClientSecret"  // Keychain account
         static let quietMode = "settings.quietMode"
+        static let agentAccountDefault = "settings.agentAccountDefault"
         static let awareness = "settings.awareness"
         static let activityTracking = "settings.activityTracking"
         static let browserHistory = "settings.browserHistory"
@@ -191,6 +197,7 @@ final class SettingsStore: ObservableObject {
         spotifyClientID = defaults.string(forKey: Keys.spotifyClientID) ?? ""
         spotifyClientSecret = KeychainStore.get(Keys.spotifyClientSecret) ?? ""
         quietModeEnabled = defaults.object(forKey: Keys.quietMode) as? Bool ?? true
+        useAgentAccountByDefault = defaults.object(forKey: Keys.agentAccountDefault) as? Bool ?? false
         situationalAwarenessEnabled = defaults.object(forKey: Keys.awareness) as? Bool ?? true
         activityTrackingEnabled = defaults.object(forKey: Keys.activityTracking) as? Bool ?? false
         includeBrowserHistoryInReview = defaults.object(forKey: Keys.browserHistory) as? Bool ?? true
@@ -213,6 +220,7 @@ final class SettingsStore: ObservableObject {
             "JUGNU_PROVIDER": provider.rawValue,
             "JUGNU_EMBED_PROVIDER": embedProvider.rawValue,
             "JUGNU_QUIET_MODE": quietModeEnabled ? "1" : "0",
+            "JUGNU_DEFAULT_SESSION": useAgentAccountByDefault ? "agent" : "primary",
             "JUGNU_ENABLE_AWARENESS": situationalAwarenessEnabled ? "1" : "0",
             "JUGNU_TRACK_ACTIVITY": activityTrackingEnabled ? "1" : "0",
             "JUGNU_INCLUDE_BROWSER_HISTORY": includeBrowserHistoryInReview ? "1" : "0",
