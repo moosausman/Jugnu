@@ -1,101 +1,132 @@
 import SwiftUI
 import AppKit
 
+/// The chat panel: header, conversation, approvals, input. Activity opens
+/// over it. The window itself is created and owned by WindowManager.
 struct ContentView: View {
-    @StateObject private var appState = AppState()
-    @State private var showHistory = false
+    @ObservedObject var appState: AppState
     @State private var showActivity = false
 
     var body: some View {
-        ZStack {
-            // The backdrop reacts to what Jugnu is doing -- the light field
-            // lifts and quickens while thinking, cools on an error. One
-            // state, read in one place, so the whole window moves together
-            // instead of the firefly animating against a static backdrop.
-            BackgroundView(state: fireflyState)
-
-            VStack(spacing: 0) {
-                TitleBarView(appState: appState, showHistory: $showHistory, showActivity: $showActivity)
-                HeroView(appState: appState)
-                ApprovalStackView(appState: appState)
-                    .animation(Theme.Motion.settle, value: appState.approvals)
-                InputBarView(appState: appState)
-            }
-
-            if showHistory {
-                HistoryView(appState: appState, isPresented: $showHistory)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
+        VStack(spacing: 0) {
+            // Above the conversation for hit-testing: a scrolled ScrollView's
+            // content extends up behind the header and would otherwise take
+            // its clicks.
+            HeaderView(appState: appState, showActivity: $showActivity)
+                .zIndex(1)
+            ConversationView(appState: appState)
+            ApprovalStackView(appState: appState)
+            InputBarView(appState: appState)
+        }
+        .overlay {
             if showActivity {
                 ActivityView(appState: appState, isPresented: $showActivity)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .transition(.opacity)
             }
         }
+        .animation(Theme.Motion.settle, value: showActivity)
+        .background(WindowBackdrop())
+        .ignoresSafeArea()
         .frame(minWidth: Theme.WindowSize.min.width, minHeight: Theme.WindowSize.min.height)
-        .background(
-            WindowAccessor { window in
-                window.titlebarAppearsTransparent = true
-                window.titleVisibility = .hidden
-                window.isMovableByWindowBackground = true
-                window.minSize = NSSize(width: Theme.WindowSize.min.width, height: Theme.WindowSize.min.height)
-                window.isOpaque = false
-                window.backgroundColor = .clear
-                // Every color in Theme is a hardcoded dark hex, but nothing
-                // told AppKit that -- so a system running in Light Mode would
-                // still draw native chrome (tooltips, the traffic-light
-                // surround, menu highlighting) in a mismatched appearance
-                // around Jugnu's own dark UI. Forcing it keeps the window
-                // internally consistent regardless of system appearance.
-                window.appearance = NSAppearance(named: .darkAqua)
-
-                // Floating, not the default .normal level: this is meant to
-                // behave like a quick-access panel (Spotlight/Raycast-style)
-                // that stays reachable above whatever else is on screen, and
-                // .canJoinAllSpaces/.fullScreenAuxiliary let it follow you to
-                // whichever Space -- including over a full-screen app -- is
-                // active, instead of staying pinned to the one it launched
-                // on. Importantly, .floating (level 3) sits well below the
-                // real system menu bar (.mainMenu is 24, .statusBar is 25)
-                // and every other piece of system chrome, so this can never
-                // cover or intercept clicks meant for the actual menu bar --
-                // only a level at or above those would do that.
-                //
-                // If the menu bar was genuinely unreachable with this window
-                // frontmost before, this is the standard fix for that class
-                // of bug. One caveat: this file set doesn't include an
-                // App/AppDelegate entry point, which is the more usual place
-                // `.level`/`NSApp.presentationOptions` get set -- if
-                // something there also touches either of those after this
-                // closure runs, it can override what's set here.
-                window.level = .floating
-                window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-
-                // AppKit remembers size + position across launches under this
-                // name, with zero extra bookkeeping required.
-                window.setFrameAutosaveName("JugnuMainWindow")
-            }
-        )
-        .onAppear(perform: launchBackend)
+        .preferredColorScheme(.dark)
+        .onReceive(NotificationCenter.default.publisher(for: .jugnuToggleActivity)) { _ in showActivity.toggle() }
+        .onReceive(NotificationCenter.default.publisher(for: .jugnuShowActivity)) { _ in showActivity = true }
     }
+}
 
-    private var fireflyState: FireflyState {
+/// Frosted, warm, still. Vibrancy underneath a near-opaque tint, with one
+/// faint static glow at the top so the surface isn't flat.
+struct WindowBackdrop: View {
+    var body: some View {
+        ZStack {
+            VisualEffectBackground(material: .hudWindow, blendingMode: .behindWindow)
+            Theme.windowBackground.opacity(0.9)
+            RadialGradient(colors: [Theme.clay.opacity(0.07), .clear],
+                           center: UnitPoint(x: 0.5, y: 0), startRadius: 0, endRadius: 320)
+        }
+        .ignoresSafeArea()
+    }
+}
+
+// MARK: - Header
+
+/// One slim row that shares the title bar with the close button.
+private struct HeaderView: View {
+    @ObservedObject var appState: AppState
+    @Binding var showActivity: Bool
+
+    private var state: FireflyState {
         if appState.errorMessage != nil { return .error }
         return appState.thinking ? .thinking : .idle
     }
 
-    // MARK: - Backend
-
-    private func launchBackend() {
-        guard let scriptPath = Bundle.main.path(forResource: "bridge", ofType: "py", inDirectory: "PythonBackend") else {
-            appState.errorMessage =
-                "Couldn't find bridge.py in the app bundle. Make sure the " +
-                "PythonBackend folder was added as a folder reference (blue " +
-                "icon) in Xcode, not a group."
-            appState.statusLabel = "error"
-            return
+    private var status: String? {
+        switch appState.statusLabel {
+        case "ready": return nil
+        case "starting": return "Starting…"
+        case "error": return "Needs attention"
+        case "thinking": return "Working…"
+        default: return appState.thinking ? "Working…" : nil
         }
-        let workingDirectory = (scriptPath as NSString).deletingLastPathComponent
-        appState.launch(bridgeScriptPath: scriptPath, workingDirectory: workingDirectory)
+    }
+
+    var body: some View {
+        HStack(spacing: 7) {
+            FireflyView(state: state, size: 16)
+            Text("Jugnu")
+                .font(Theme.text(12.5, weight: .semibold))
+                .foregroundStyle(Theme.ink)
+            if let status {
+                Text(status)
+                    .font(Theme.text(11.5))
+                    .foregroundStyle(appState.errorMessage != nil ? Theme.danger.opacity(0.9) : Theme.inkFaint)
+                    .lineLimit(1)
+                    .transition(.opacity)
+            }
+            Spacer(minLength: 8)
+
+            IconButton(symbol: "square.and.pencil", size: 12.5, help: "New conversation (⌘N)") {
+                appState.clear()
+            }
+            .disabled(appState.thinking || appState.messages.isEmpty)
+            .opacity(appState.thinking || appState.messages.isEmpty ? 0.4 : 1)
+
+            IconButton(symbol: "list.bullet.rectangle", size: 12.5, help: "Activity (⌘J)") {
+                showActivity.toggle()
+            }
+            .overlay(alignment: .topTrailing) {
+                if appState.activityNeedsAttention || !appState.backgroundRuns.isEmpty {
+                    Circle()
+                        .fill(appState.activityNeedsAttention ? Theme.danger : Theme.clay)
+                        .frame(width: 6, height: 6)
+                        .offset(x: -3, y: 3)
+                        .allowsHitTesting(false)
+                }
+            }
+
+            Menu {
+                Button("Settings…") { WindowManager.shared.showSettings() }
+                Button("Daily Review") { appState.requestDailyReview() }
+                    .disabled(appState.thinking)
+                Divider()
+                Button("Hide Jugnu") { WindowManager.shared.hideChat() }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Theme.inkDim)
+                    .frame(width: 26, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More")
+        }
+        .animation(Theme.Motion.snappy, value: status)
+        // The close button sits at the far left of the title bar.
+        .padding(.leading, 36)
+        .padding(.trailing, 8)
+        .frame(height: 30)
+        .padding(.top, 1)
     }
 }

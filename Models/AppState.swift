@@ -5,10 +5,10 @@ import SwiftUI
 
 @MainActor
 final class AppState: ObservableObject {
-    /// Lets AppKit-side singletons (MenuBarController) reach the live
-    /// AppState without threading it through AppDelegate -- same pattern
-    /// as NotificationManager.shared / MenuBarController.shared elsewhere.
-    static weak var shared: AppState?
+    /// The one AppState. Owned here rather than by a view, so closing or
+    /// hiding the chat window never tears down the conversation or the
+    /// backend process behind it.
+    static let shared = AppState()
 
     @Published var messages: [ChatMessage] = []
     @Published var thinking = false
@@ -95,8 +95,21 @@ final class AppState: ObservableObject {
     /// should NOT touch thinking/statusLabel since nothing was waiting on it.
     private var awaitingDailyReview = false
 
-    init() {
-        AppState.shared = self
+    /// The environment the running backend was started with, so Settings can
+    /// tell whether a change still needs a restart to apply.
+    @Published private(set) var launchedEnvironment: [String: String] = [:]
+
+    init() {}
+
+    /// Starts bridge.py from the app bundle.
+    func launchBackend() {
+        guard let scriptPath = Bundle.main.path(forResource: "bridge", ofType: "py", inDirectory: "PythonBackend") else {
+            errorMessage = "Couldn't find bridge.py in the app bundle. Add the PythonBackend folder to the target "
+                + "as a folder reference (blue icon), not a group."
+            statusLabel = "error"
+            return
+        }
+        launch(bridgeScriptPath: scriptPath, workingDirectory: (scriptPath as NSString).deletingLastPathComponent)
     }
 
     func launch(bridgeScriptPath: String, workingDirectory: String) {
@@ -165,10 +178,9 @@ final class AppState: ObservableObject {
         // their environment once at import time and have no hot-reload
         // path, which is exactly why restarting the process is the only
         // way a settings change ever applies.
-        newBridge.start(
-            workingDirectory: workingDirectory,
-            settingsEnvironment: SettingsStore.shared.backendEnvironment
-        )
+        let environment = SettingsStore.shared.backendEnvironment
+        newBridge.start(workingDirectory: workingDirectory, settingsEnvironment: environment)
+        launchedEnvironment = environment
         bridge = newBridge
     }
 

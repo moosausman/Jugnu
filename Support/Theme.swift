@@ -1,63 +1,55 @@
 import SwiftUI
 
-/// Design tokens for Jugnu. Centralizing colors, spacing, motion, and type
-/// here keeps every view drawing from the same warm, "firefly at dusk"
-/// palette instead of ad-hoc literals scattered across files.
+/// Design tokens for Jugnu: one warm, dark palette, one type scale, one
+/// spacing scale. Every view draws from here instead of ad-hoc literals.
 enum Theme {
 
     // MARK: - Surfaces
 
-    static let windowBackground = Color(hex: 0x171310)
-    static let deepPanel = Color(hex: 0x201A15)
-    static let panel = Color(hex: 0x2B231C).opacity(0.82)
-    static let panelSolid = Color(hex: 0x2B231C)
+    /// The window itself. Sits over real vibrancy, so it's near-opaque rather than solid.
+    static let windowBackground = Color(hex: 0x15120F)
+    /// Cards, the input field, grouped rows.
+    static let panel = Color(hex: 0x201B17)
+    static let panelSolid = Color(hex: 0x201B17)
+    /// Hover and pressed fills on top of `panel`.
+    static let panelRaised = Color(hex: 0x2A241F)
+    /// Wells: code blocks, text fields inside cards.
+    static let well = Color.black.opacity(0.28)
 
-    // MARK: - Borders
+    // MARK: - Lines
 
-    static let border = Color.white.opacity(0.08)
-    static let borderStrong = Color(hex: 0xE0824F).opacity(0.55)
+    static let border = Color.white.opacity(0.07)
+    static let borderStrong = Color.white.opacity(0.13)
 
-    // MARK: - Ink (text)
+    // MARK: - Ink
 
-    static let ink = Color(hex: 0xF7EFE3)
-    static let inkDim = ink.opacity(0.68)
-    static let inkFaint = ink.opacity(0.42)
+    static let ink = Color(hex: 0xF3ECE4)
+    static let inkDim = ink.opacity(0.62)
+    static let inkFaint = ink.opacity(0.38)
 
-    // MARK: - Accent
+    // MARK: - Accent and status
 
-    static let clay = Color(hex: 0xE0824F)
-    static let danger = Color(hex: 0xE2685C)
+    static let clay = Color(hex: 0xE58A55)
+    static let danger = Color(hex: 0xE8685C)
+    static let success = Color(hex: 0x76C28E)
 
-    // MARK: - Radii
+    // MARK: - Shape
 
-    static let radiusSmall: CGFloat = 8
-    static let radiusMedium: CGFloat = 12
-    static let radiusLarge: CGFloat = 20
+    static let radiusSmall: CGFloat = 7
+    static let radiusMedium: CGFloat = 11
+    static let radiusLarge: CGFloat = 16
 
     // MARK: - Window
-    // The window's min size used to live as two separate hardcoded
-    // 420x480 literals -- one in ContentView's `.frame(minWidth:
-    // minHeight:)`, one in its WindowAccessor's `window.minSize` -- with
-    // nothing keeping them in sync if either changed. One source of
-    // truth now. Shrunk from 420x480: this is a quick-access panel that
-    // lives a click below a menu bar icon, not a full app window, and
-    // read closer to a document window than a petite utility at the old
-    // size.
 
     enum WindowSize {
-        // 360x420 was sized for the old layout, where the answer was capped
-        // at six lines and anything longer was simply cut off -- so the
-        // window never needed room for more. Now that answers scroll and
-        // wrap, the constraint is reading comfort: 400pt of width is about
-        // 60 characters at the body size, which is a sensible measure, and
-        // the extra height buys roughly four more lines before scrolling.
-        // Still a quick-access panel, not a document window.
-        static let min = CGSize(width: 400, height: 520)
+        /// What the chat panel opens at: a quick panel, not a document window.
+        static let initial = CGSize(width: 380, height: 540)
+        static let min = CGSize(width: 340, height: 420)
+        static let max = CGSize(width: 760, height: 1100)
+        static let settings = CGSize(width: 560, height: 520)
     }
 
     // MARK: - Spacing
-    // One scale, used everywhere, instead of one-off padding values — so
-    // rhythm stays consistent as the app grows.
 
     enum Spacing {
         static let xs: CGFloat = 4
@@ -68,92 +60,31 @@ enum Theme {
     }
 
     // MARK: - Motion
-    // Three speeds: `snappy` for direct responses to input (focus, press,
-    // hover, toggles), `settle` for content that arrives on its own (new
-    // messages, state changes), and `breathe` for ambient motion that
-    // isn't a response to anything -- the background's slow bloom pulse,
-    // meant to be felt more than seen. Deliberately restrained — nothing
-    // bounces or overshoots, and ambient motion in particular has to stay
-    // slow enough to read as "alive" rather than "animating."
+    // Deliberately little of it. The firefly is the one thing that moves on
+    // its own; everything else only fades when its content changes.
 
     enum Motion {
-        static let snappy = Animation.easeOut(duration: 0.16)
-        static let settle = Animation.easeInOut(duration: 0.32)
-        static let breathe = Animation.easeInOut(duration: 6)
-
-        // Springs, for anything that ARRIVES rather than merely changes.
-        // Eased curves decelerate into place with a mathematical evenness
-        // the eye reads as mechanical; a spring overshoots a touch and
-        // settles, which reads as physical. Used for the answer appearing,
-        // history rows entering, and button presses.
-        //
-        // Damping is high enough that nothing visibly wobbles -- the goal
-        // is weight, not bounce.
-
-        /// Content arriving on screen: an answer, a row, a badge.
-        static let arrive = Animation.spring(response: 0.42, dampingFraction: 0.78)
-
-        /// Direct response to a press or hover. Faster, tighter.
-        static let press = Animation.spring(response: 0.26, dampingFraction: 0.68)
-
-        /// Per-line stagger for a multi-line reveal.
-        static func arriveStaggered(_ index: Int, step: Double = 0.028, cap: Int = 14) -> Animation {
-            arrive.delay(Double(min(index, cap)) * step)
-        }
-    }
-
-    // MARK: - Elevation
-    // Two-layer shadows. A single shadow reads as a sticker; a tight dark
-    // contact shadow plus a wide soft ambient one is how real depth looks,
-    // and it's what separates a panel that sits ON the background from one
-    // that floats above it.
-
-    struct Elevation: ViewModifier {
-        var contact: CGFloat
-        var ambient: CGFloat
-        var opacity: Double
-
-        func body(content: Content) -> some View {
-            content
-                .shadow(color: .black.opacity(opacity * 0.55), radius: contact, y: contact * 0.45)
-                .shadow(color: .black.opacity(opacity * 0.35), radius: ambient, y: ambient * 0.35)
-        }
+        /// Direct responses to input: hover, toggles, showing a field.
+        static let snappy = Animation.easeOut(duration: 0.14)
+        /// Content changing on its own: a new message, a panel opening.
+        static let settle = Animation.easeInOut(duration: 0.22)
     }
 
     // MARK: - Type
-    //
-    // Two families, used for different jobs.
-    //
-    // Everything used to be `mono`, including paragraphs of explanation in
-    // Settings and Jugnu's actual answers. Monospace is a poor choice for
-    // prose -- uniform advance widths remove the word-shape cues people read
-    // by, so it scans noticeably slower and looks like terminal output rather
-    // than something written for you.
-    //
-    // `text` is for anything meant to be READ: answers, descriptions, labels.
-    // `mono` stays for anything meant to be INSPECTED, where character
-    // alignment and unambiguous glyphs matter: model tags, file paths, shell
-    // commands, tool names. Keeping the monospace accent there preserves the
-    // app's character without paying for it in legibility.
+    // `text` for anything read as language; `mono` for things inspected
+    // character by character (model tags, paths, tool names).
 
-    /// Prose. Use for anything the user reads as language.
     static func text(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight)
     }
 
-    /// Technical values. Use for model tags, paths, commands, tool names.
-    static func mono(_ size: CGFloat, weight: Font.Weight = .medium) -> Font {
+    static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
 
-    // MARK: - Reading measure
-    // Line spacing that suits body text at the sizes used here. Tight
-    // leading is fine for a label and actively unpleasant for a paragraph.
-    static let bodyLineSpacing: CGFloat = 4.5
+    static let bodyLineSpacing: CGFloat = 3
 }
 
-// If your project already defines `Color(hex:)` elsewhere, delete this
-// extension so you don't end up with a duplicate-declaration error.
 extension Color {
     init(hex: UInt32, opacity: Double = 1) {
         self.init(
@@ -166,14 +97,62 @@ extension Color {
     }
 }
 
-extension View {
-    /// Layered depth. `level` 1 is a resting panel, 2 a raised control,
-    /// 3 something actively floating (focused input, hovered card).
-    func elevation(_ level: Int) -> some View {
-        switch level {
-        case 1:  return AnyView(modifier(Theme.Elevation(contact: 4,  ambient: 12, opacity: 0.5)))
-        case 2:  return AnyView(modifier(Theme.Elevation(contact: 7,  ambient: 20, opacity: 0.6)))
-        default: return AnyView(modifier(Theme.Elevation(contact: 11, ambient: 30, opacity: 0.7)))
+// MARK: - Shared controls
+
+/// Small borderless icon button used in headers: dims at rest, brightens on hover.
+struct IconButton: View {
+    let symbol: String
+    var size: CGFloat = 13
+    var help: String = ""
+    var tint: Color = Theme.inkDim
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: size, weight: .regular))
+                .frame(width: 26, height: 24)
+                .foregroundStyle(hovering ? Theme.ink : tint)
+                .background(RoundedRectangle(cornerRadius: 6).fill(hovering ? Color.white.opacity(0.07) : .clear))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help)
+    }
+}
+
+/// Filled accent button (primary) or quiet tinted button (secondary).
+struct JugnuButtonStyle: ButtonStyle {
+    enum Kind { case primary, secondary, destructive }
+    var kind: Kind = .secondary
+    var compact = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Theme.text(compact ? 11.5 : 12, weight: .medium))
+            .padding(.horizontal, compact ? 10 : 12)
+            .padding(.vertical, compact ? 4 : 5.5)
+            .foregroundStyle(foreground)
+            .background(RoundedRectangle(cornerRadius: 7).fill(background))
+            .opacity(configuration.isPressed ? 0.75 : 1)
+    }
+
+    private var foreground: Color {
+        switch kind {
+        case .primary: return Color(hex: 0x1A120C)
+        case .secondary: return Theme.ink
+        case .destructive: return Theme.danger
+        }
+    }
+
+    private var background: Color {
+        switch kind {
+        case .primary: return Theme.clay
+        case .secondary: return Color.white.opacity(0.08)
+        case .destructive: return Theme.danger.opacity(0.12)
         }
     }
 }

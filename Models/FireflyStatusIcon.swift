@@ -14,9 +14,14 @@ import AppKit
 enum FireflyStatusIcon {
     private static let canvasSize = NSSize(width: 18, height: 18)
 
-    static func image(for state: FireflyState, flutter: Bool) -> NSImage {
+    static func image(for state: FireflyState, flutter: Bool, badge: Bool = false) -> NSImage {
         let image = NSImage(size: canvasSize, flipped: false) { rect in
             draw(in: rect, state: state, flutter: flutter)
+            if badge {
+                // Something is waiting for the user's OK.
+                ((state == .error) ? NSColor.systemRed : NSColor.black).setFill()
+                NSBezierPath(ovalIn: NSRect(x: rect.maxX - 5.5, y: rect.maxY - 5.5, width: 5, height: 5)).fill()
+            }
             return true
         }
         // Error gets its own warm color so it stands out even though the

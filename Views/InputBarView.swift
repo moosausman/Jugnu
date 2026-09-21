@@ -1,95 +1,69 @@
 import SwiftUI
 
+/// The message field. Grows to a few lines, sends on Return (Option-Return
+/// for a new line), and turns its send button into Stop while Jugnu works.
+/// You can keep typing the next message while it does.
 struct InputBarView: View {
     @ObservedObject var appState: AppState
-    @State private var text: String = ""
+    @State private var text = ""
     @FocusState private var focused: Bool
     @StateObject private var speech = SpeechInput()
 
+    private var canSend: Bool {
+        !appState.thinking && appState.statusLabel != "starting"
+            && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
-        HStack(spacing: 9) {
-            Text("\u{203A}")
-                .foregroundStyle(Theme.clay)
-                .font(.system(size: 14, design: .monospaced))
-
-            TextField(appState.thinking ? "Jugnu is working…" : "Ask Jugnu anything…", text: $text)
+        HStack(alignment: .bottom, spacing: 6) {
+            TextField(speech.isListening ? "Listening…" : "Message Jugnu", text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
-                .font(Theme.text(13))
+                .font(Theme.text(13.5))
                 .foregroundStyle(Theme.ink)
+                .lineLimit(1...6)
                 .focused($focused)
-                .disabled(appState.thinking)
                 .onSubmit(send)
+                .padding(.vertical, 5)
+                .padding(.leading, 4)
 
-            if !appState.thinking {
-                // Push-to-talk: tap to dictate, tap again to stop. Words
-                // stream into the field so they can be edited before sending.
-                Button(action: { speech.toggle() }) {
-                    Image(systemName: speech.isListening ? "mic.fill" : "mic")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(speech.isListening ? Theme.danger : Theme.inkFaint)
+            if !appState.thinking && text.isEmpty || speech.isListening {
+                RoundButton(symbol: speech.isListening ? "waveform" : "mic",
+                            fill: speech.isListening ? Theme.danger.opacity(0.18) : .clear,
+                            tint: speech.isListening ? Theme.danger : Theme.inkFaint,
+                            help: speech.isListening ? "Stop dictation" : "Dictate") {
+                    speech.toggle()
                 }
-                .buttonStyle(.plain)
-                .help(speech.isListening ? "Stop dictation" : "Dictate (on-device when available)")
-                .transition(.opacity)
             }
 
             if appState.thinking {
-                ThinkingDots()
-                    .transition(.opacity)
-                // Stops the request in progress at its next checkpoint --
-                // between tool calls, or right away if it's waiting on you.
-                Button(action: { appState.cancelRun() }) {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(Theme.ink)
-                        .padding(5)
-                        .background(Circle().fill(Color.white.opacity(0.1)))
+                RoundButton(symbol: "stop.fill", fill: Color.white.opacity(0.12), tint: Theme.ink,
+                            help: "Stop (⌘.)", symbolSize: 9) {
+                    appState.cancelRun()
                 }
-                .buttonStyle(.plain)
-                .help("Stop (⌘.)")
                 .keyboardShortcut(".", modifiers: .command)
-                .transition(.opacity)
             } else {
-                Button(action: send) {
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 13, weight: .medium))
+                RoundButton(symbol: "arrow.up", fill: canSend ? Theme.clay : Color.white.opacity(0.07),
+                            tint: canSend ? Color(hex: 0x1A120C) : Theme.inkFaint, help: "Send (Return)",
+                            weight: .semibold) {
+                    send()
                 }
-                .buttonStyle(PressableButtonStyle())
-                .foregroundStyle(canSend ? Theme.clay : Theme.inkFaint)
                 .disabled(!canSend)
-                .transition(.opacity)
             }
         }
-        .padding(11)
-        .background(Theme.panel)
-        .clipShape(RoundedRectangle(cornerRadius: Theme.radiusMedium))
-        // Two strokes: a constant hairline, plus a warm ring that fades in
-        // on focus and slowly breathes while it's there. A static accent
-        // border says "this is selected"; one that breathes says the app is
-        // awake and waiting for you.
+        .padding(.leading, 10)
+        .padding(.trailing, 6)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Theme.panel))
         .overlay(
-            RoundedRectangle(cornerRadius: Theme.radiusMedium)
-                .stroke(Theme.border, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(focused ? Theme.clay.opacity(0.45) : Theme.borderStrong, lineWidth: 1)
         )
-        .overlay {
-            if focused {
-                TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { timeline in
-                    let t = timeline.date.timeIntervalSinceReferenceDate
-                    let pulse = 0.5 + 0.5 * sin(t * 1.5)
-                    RoundedRectangle(cornerRadius: Theme.radiusMedium)
-                        .stroke(Theme.clay.opacity(0.35 + 0.30 * pulse), lineWidth: 1.2)
-                        .shadow(color: Theme.clay.opacity(0.18 + 0.16 * pulse), radius: 9)
-                }
-                .transition(.opacity)
-            }
-        }
-        .elevation(focused ? 3 : 1)
-        .animation(Theme.Motion.press, value: focused)
-        .animation(Theme.Motion.settle, value: appState.thinking)
-        .opacity(appState.thinking ? 0.75 : 1)
-        .padding(.horizontal, Theme.Spacing.lg)
-        .padding(.bottom, 14)
+        .animation(Theme.Motion.snappy, value: focused)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
+        .padding(.top, 4)
         .onAppear { focused = true }
+        .onReceive(NotificationCenter.default.publisher(for: .jugnuFocusInput)) { _ in focused = true }
         .onChange(of: speech.transcript) { _, words in
             if speech.isListening || !words.isEmpty { text = words }
         }
@@ -98,66 +72,40 @@ struct InputBarView: View {
         }
     }
 
-    private var canSend: Bool {
-        !appState.thinking && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
     private func send() {
         guard canSend else { return }
+        if speech.isListening { speech.stop() }
         appState.send(text)
         text = ""
     }
 }
 
-/// Scales the button down slightly on press — a small bit of tactile
-/// feedback that the plain macOS button style doesn't give you for free.
-private struct PressableButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            // Spring rather than ease: a press should feel like pushing
-            // something with mass, which means a little overshoot coming
-            // back. Also dips brightness on the way down, so the feedback
-            // survives even where the scale change is subtle.
-            .scaleEffect(configuration.isPressed ? 0.82 : 1)
-            .brightness(configuration.isPressed ? -0.12 : 0)
-            .animation(Theme.Motion.press, value: configuration.isPressed)
-    }
+extension Notification.Name {
+    static let jugnuFocusInput = Notification.Name("jugnuFocusInput")
 }
 
-/// A three-dot "Jugnu is composing" indicator, in place of the send arrow
-/// while a request is in flight.
-private struct ThinkingDots: View {
-    @State private var phase: CGFloat = 0
+private struct RoundButton: View {
+    let symbol: String
+    var fill: Color
+    var tint: Color
+    var help: String
+    var symbolSize: CGFloat = 11.5
+    var weight: Font.Weight = .medium
+    let action: () -> Void
+    @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 3) {
-            ForEach(0..<3, id: \.self) { i in
-                Circle()
-                    .fill(Theme.clay)
-                    .frame(width: 5, height: 5)
-                    .scaleEffect(0.62 + 0.38 * dotWave(for: i))
-                    .opacity(0.35 + 0.65 * dotWave(for: i))
-                    .shadow(color: Theme.clay.opacity(0.5 * dotWave(for: i)), radius: 3)
-            }
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: symbolSize, weight: weight))
+                .foregroundStyle(tint)
+                .frame(width: 26, height: 26)
+                .background(Circle().fill(fill))
+                .background(Circle().fill(Color.white.opacity(hovering ? 0.06 : 0)))
+                .contentShape(Circle())
         }
-        .frame(width: 24, height: 13)
-        .onAppear {
-            withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) {
-                phase = 1
-            }
-        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help)
     }
-
-    /// 0...1 travelling wave. Each dot samples the same curve a third of a
-    /// cycle apart, so brightness and size move along the row rather than
-    /// all three blinking together.
-    private func dotWave(for index: Int) -> Double {
-        let shifted = (phase + CGFloat(index) * 0.33).truncatingRemainder(dividingBy: 1)
-        return Double(sin(shifted * .pi))
-    }
-}
-
-#Preview {
-    InputBarView(appState: AppState())
-        .background(Theme.windowBackground)
 }

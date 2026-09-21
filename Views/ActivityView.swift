@@ -17,7 +17,8 @@ struct ActivityView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            Divider().overlay(Theme.border)
+                .zIndex(1)   // keeps scrolled content from taking the header's clicks
+            Rectangle().fill(Theme.border).frame(height: 1)
             ScrollView {
                 Group {
                     switch tab {
@@ -28,42 +29,40 @@ struct ActivityView: View {
                     case .log: LogTab(appState: appState)
                     }
                 }
-                .padding(Theme.Spacing.lg)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(Theme.panelSolid)
+        .background(WindowBackdrop())
         .onAppear(perform: refresh)
         .onChange(of: tab) { _, _ in refresh() }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Button(action: { withAnimation(Theme.Motion.settle) { isPresented = false } }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
-                        Text("Back").font(Theme.text(12.5, weight: .medium))
-                    }
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Theme.clay)
-                .keyboardShortcut(.escape, modifiers: [])
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text("Activity")
+                    .font(Theme.text(12.5, weight: .semibold))
+                    .foregroundStyle(Theme.ink)
                 Spacer()
-                Text("Activity").font(Theme.text(12.5, weight: .semibold)).foregroundStyle(Theme.inkDim)
-                Spacer()
-                Button(action: refresh) { Image(systemName: "arrow.clockwise").font(.system(size: 11)) }
-                    .buttonStyle(.plain).foregroundStyle(Theme.inkDim).help("Refresh")
+                IconButton(symbol: "arrow.clockwise", size: 11.5, help: "Refresh", action: refresh)
+                IconButton(symbol: "xmark", size: 11, help: "Close (Esc)") { isPresented = false }
+                    .keyboardShortcut(.escape, modifiers: [])
             }
+            .padding(.leading, 36)
+            .padding(.trailing, 8)
+            .frame(height: 30)
+            .padding(.top, 1)
+
             Picker("", selection: $tab) {
                 ForEach(Tab.allCases) { t in Text(t.rawValue).tag(t) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .padding(.horizontal, 14)
+            .padding(.bottom, 10)
         }
-        .padding(.horizontal, Theme.Spacing.lg)
-        .padding(.top, 52)
-        .padding(.bottom, 12)
     }
 
     private func refresh() {
@@ -89,10 +88,9 @@ struct ActivityView: View {
 struct SectionLabel: View {
     let text: String
     var body: some View {
-        Text(text.uppercased())
-            .font(Theme.text(10, weight: .semibold))
+        Text(text)
+            .font(Theme.text(11.5, weight: .semibold))
             .foregroundStyle(Theme.inkFaint)
-            .tracking(0.6)
             .padding(.top, 6)
     }
 }
@@ -102,10 +100,10 @@ struct Pill: View {
     var tint: Color = Theme.inkDim
     var body: some View {
         Text(text)
-            .font(Theme.mono(9.5))
+            .font(Theme.text(10, weight: .medium))
             .foregroundStyle(tint)
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(Capsule().fill(tint.opacity(0.13)))
+            .padding(.horizontal, 6).padding(.vertical, 1.5)
+            .background(Capsule().fill(tint.opacity(0.12)))
     }
 }
 
@@ -113,15 +111,16 @@ struct Card<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
         VStack(alignment: .leading, spacing: 6) { content }
-            .padding(10)
+            .padding(11)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: Theme.radiusSmall).fill(Color.white.opacity(0.035)))
+            .background(RoundedRectangle(cornerRadius: Theme.radiusMedium, style: .continuous).fill(Theme.panel))
+            .overlay(RoundedRectangle(cornerRadius: Theme.radiusMedium, style: .continuous).stroke(Theme.border, lineWidth: 1))
     }
 }
 
 private func stateColor(_ state: TaskState) -> Color {
     switch state {
-    case .done: return Color(red: 0.45, green: 0.78, blue: 0.5)
+    case .done: return Theme.success
     case .failed, .blocked: return Theme.danger
     case .waitingApproval: return Theme.clay
     case .running, .verifying: return Theme.clay
@@ -155,8 +154,14 @@ private struct NowTab: View {
             if let run = appState.activeRun ?? appState.runs.first {
                 RunDetail(run: run, appState: appState)
             } else {
-                Text("Nothing running. Ask Jugnu for something and its plan will show up here.")
-                    .font(Theme.text(12)).foregroundStyle(Theme.inkFaint)
+                VStack(spacing: 8) {
+                    Image(systemName: "list.bullet.rectangle").font(.system(size: 22)).foregroundStyle(Theme.inkFaint)
+                    Text("Nothing running").font(Theme.text(12.5, weight: .medium)).foregroundStyle(Theme.inkDim)
+                    Text("Plans and progress show up here while Jugnu works.")
+                        .font(Theme.text(11.5)).foregroundStyle(Theme.inkFaint).multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 40)
             }
             if !appState.backgroundRuns.isEmpty {
                 SectionLabel(text: "In the background")
@@ -382,7 +387,7 @@ private struct MemoryTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("What Jugnu remembers. Edit anything that's wrong -- edits count as confirmed by you. Delete removes it for good.")
+            Text("Edit anything that's wrong; your edits count as confirmed.")
                 .font(Theme.text(11)).foregroundStyle(Theme.inkFaint).fixedSize(horizontal: false, vertical: true)
             Picker("", selection: $kind) {
                 ForEach(kinds, id: \.0) { k in Text(label(for: k)).tag(k.0) }
@@ -481,7 +486,7 @@ private struct SkillsTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Workflows Jugnu learned from tasks that worked. Suggested skills do nothing until you accept them.")
+            Text("Workflows learned from tasks that worked. Suggestions do nothing until you accept them.")
                 .font(Theme.text(11)).foregroundStyle(Theme.inkFaint).fixedSize(horizontal: false, vertical: true)
             if appState.skillLibrary.isEmpty {
                 Text("No skills yet -- they're suggested after multi-step tasks succeed.")

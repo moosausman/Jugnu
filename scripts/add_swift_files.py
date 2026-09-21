@@ -2,6 +2,7 @@
 """Adds Swift source files to Jugnu.xcodeproj (explicit file references).
 
 usage: scripts/add_swift_files.py Views/Foo.swift Models/Bar.swift ...
+       scripts/add_swift_files.py --remove Views/Old.swift ...
 
 The project lists every file explicitly rather than syncing folders, so a
 new .swift file on disk isn't compiled until it has a PBXFileReference, a
@@ -51,5 +52,24 @@ def add(paths: list[str]) -> None:
     open(PBX, "w").write(text)
 
 
+def remove(paths: list[str]) -> None:
+    """Drops files from the project (all four places). The files on disk are left alone."""
+    text = open(PBX).read()
+    for rel in paths:
+        name = os.path.basename(rel)
+        ref = re.search(rf"(\w{{24}}) /\* {re.escape(name)} \*/ = {{isa = PBXFileReference", text)
+        build = re.search(rf"(\w{{24}}) /\* {re.escape(name)} in Sources \*/ = {{isa = PBXBuildFile", text)
+        if not ref:
+            print(f"not in project: {rel}")
+            continue
+        ids = [ref.group(1)] + ([build.group(1)] if build else [])
+        text = "".join(line for line in text.splitlines(keepends=True) if not any(i in line for i in ids))
+        print(f"removed: {rel}")
+    open(PBX, "w").write(text)
+
+
 if __name__ == "__main__":
-    add(sys.argv[1:])
+    if sys.argv[1:2] == ["--remove"]:
+        remove(sys.argv[2:])
+    else:
+        add(sys.argv[1:])

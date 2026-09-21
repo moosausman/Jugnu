@@ -141,6 +141,18 @@ final class SettingsStore: ObservableObject {
     @Published var dailyReviewEnabled: Bool { didSet { defaults.set(dailyReviewEnabled, forKey: Keys.dailyReviewEnabled) } }
     @Published var dailyReviewTime: Date { didSet { defaults.set(dailyReviewTime, forKey: Keys.dailyReviewTime) } }
 
+    // MARK: - App (UI only; not passed to the backend)
+
+    /// While a Jugnu window is open, show it in the Dock and give it its own
+    /// menu bar (a menu-bar-only app can't own the menu bar). Hidden again
+    /// when the window closes.
+    @Published var showInDockWhenOpen: Bool {
+        didSet {
+            defaults.set(showInDockWhenOpen, forKey: Keys.showInDock)
+            WindowManager.shared.updateActivationPolicy()
+        }
+    }
+
     // MARK: - Storage
 
     private let defaults = UserDefaults.standard
@@ -174,6 +186,7 @@ final class SettingsStore: ObservableObject {
         static let proactiveActions = "settings.proactiveActions"
         static let dailyReviewEnabled = "settings.dailyReviewEnabled"
         static let dailyReviewTime = "settings.dailyReviewTime"
+        static let showInDock = "settings.showInDockWhenOpen"
     }
 
     // MARK: - Init
@@ -221,6 +234,7 @@ final class SettingsStore: ObservableObject {
         dailyReviewEnabled = defaults.object(forKey: Keys.dailyReviewEnabled) as? Bool ?? false
         dailyReviewTime = defaults.object(forKey: Keys.dailyReviewTime) as? Date
             ?? Calendar.current.date(bySettingHour: 21, minute: 0, second: 0, of: Date()) ?? Date()
+        showInDockWhenOpen = defaults.object(forKey: Keys.showInDock) as? Bool ?? true
     }
 
     // MARK: - Bridging to the Python backend

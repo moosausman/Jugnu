@@ -1,22 +1,20 @@
 import SwiftUI
 
-/// The one moment Jugnu stops and asks: a consequential action it wants to
-/// take, exactly what it is, why it needs a yes, and what can't be undone.
-/// Stacks above the input bar; the oldest request is answered first.
+/// The one moment Jugnu stops and asks. Sits above the input; the oldest
+/// request is answered first.
 struct ApprovalStackView: View {
     @ObservedObject var appState: AppState
 
     var body: some View {
         if let approval = appState.approvals.first {
-            ApprovalCardView(approval: approval, remaining: appState.approvals.count - 1) { decision, note in
-                withAnimation(Theme.Motion.settle) {
-                    appState.respond(to: approval, decision: decision, note: note)
-                }
+            ApprovalCardView(approval: approval, remaining: appState.approvals.count - 1,
+                             keyboardShortcuts: true) { decision, note in
+                appState.respond(to: approval, decision: decision, note: note)
             }
             .id(approval.id)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-            .padding(.horizontal, Theme.Spacing.lg)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 4)
+            .transition(.opacity)
         }
     }
 }
@@ -24,115 +22,112 @@ struct ApprovalStackView: View {
 struct ApprovalCardView: View {
     let approval: ApprovalRequest
     let remaining: Int
+    /// Only the card above the input takes ⌘Return, so a shortcut can never
+    /// answer a different request than the one in front of you. Deny is
+    /// always a click.
+    var keyboardShortcuts = false
     let onDecision: (String, String) -> Void
 
     @State private var note = ""
     @State private var showNote = false
 
-    private var riskColor: Color {
-        switch approval.risk {
-        case "high": return Theme.danger
-        case "medium": return Theme.clay
-        default: return Theme.inkDim
-        }
+    private var tint: Color {
+        approval.risk == "high" ? Theme.danger : Theme.clay
+    }
+
+    private var title: String {
+        let tool = approval.tool.replacingOccurrences(of: "_", with: " ")
+        return tool.isEmpty ? "Allow this action?" : "Allow \(tool)?"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 7) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
                 Image(systemName: "hand.raised.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(riskColor)
-                Text("Jugnu needs your OK")
-                    .font(Theme.text(12, weight: .semibold))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(tint)
+                Text(title)
+                    .font(Theme.text(12.5, weight: .semibold))
                     .foregroundStyle(Theme.ink)
-                Spacer()
-                Text(approval.risk.uppercased())
-                    .font(Theme.mono(9.5))
-                    .foregroundStyle(riskColor)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Capsule().fill(riskColor.opacity(0.14)))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
                 if remaining > 0 {
-                    Text("+\(remaining)")
-                        .font(Theme.mono(9.5))
+                    Text("+\(remaining) more")
+                        .font(Theme.text(10.5))
                         .foregroundStyle(Theme.inkFaint)
+                }
+                if !approval.reversible {
+                    Text("Can't be undone")
+                        .font(Theme.text(10.5, weight: .medium))
+                        .foregroundStyle(Theme.danger)
                 }
             }
 
             Text(approval.summary)
                 .font(Theme.mono(11))
-                .foregroundStyle(Theme.ink)
+                .foregroundStyle(Theme.ink.opacity(0.9))
                 .textSelection(.enabled)
-                .lineLimit(6)
+                .lineLimit(5)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(8)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: Theme.radiusSmall).fill(Color.black.opacity(0.22)))
+                .background(RoundedRectangle(cornerRadius: Theme.radiusSmall).fill(Theme.well))
 
             let why = ([approval.why] + approval.reasons).filter { !$0.isEmpty }
             if !why.isEmpty {
                 Text(why.joined(separator: " · "))
-                    .font(Theme.text(10.5))
+                    .font(Theme.text(11))
                     .foregroundStyle(Theme.inkDim)
+                    .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-            if !approval.reversible {
-                Label("Can't be undone", systemImage: "exclamationmark.triangle")
-                    .font(Theme.text(10.5, weight: .medium))
-                    .foregroundStyle(Theme.danger.opacity(0.9))
             }
 
             if showNote {
-                TextField("Tell Jugnu what to do instead (optional)", text: $note)
+                TextField("What should Jugnu do instead?", text: $note)
                     .textFieldStyle(.plain)
-                    .font(Theme.text(11.5))
-                    .padding(7)
-                    .background(RoundedRectangle(cornerRadius: Theme.radiusSmall).fill(Theme.panelSolid))
+                    .font(Theme.text(12))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: Theme.radiusSmall).fill(Theme.well))
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Button("Deny") { onDecision("deny", note) }
-                    .buttonStyle(ApprovalButtonStyle(kind: .secondary))
-                    .keyboardShortcut(.escape, modifiers: [])
-                Button(showNote ? "Hide note" : "Add note") {
-                    withAnimation(Theme.Motion.snappy) { showNote.toggle() }
+                    .buttonStyle(JugnuButtonStyle(kind: .secondary, compact: true))
+                Button { showNote.toggle() } label: {
+                    Image(systemName: showNote ? "text.bubble.fill" : "text.bubble")
+                        .font(.system(size: 11))
                 }
                 .buttonStyle(.plain)
-                .font(Theme.text(11))
                 .foregroundStyle(Theme.inkFaint)
+                .help("Add a note")
                 Spacer()
                 if approval.allowTaskScope {
-                    Button("Allow for this task") { onDecision("approve_task", note) }
-                        .buttonStyle(ApprovalButtonStyle(kind: .secondary))
+                    Button("Allow for task") { onDecision("approve_task", note) }
+                        .buttonStyle(JugnuButtonStyle(kind: .secondary, compact: true))
                         .help("Also allow this kind of action for the rest of this task")
                 }
-                Button("Allow") { onDecision("approve", note) }
-                    .buttonStyle(ApprovalButtonStyle(kind: .primary))
-                    .keyboardShortcut(.return, modifiers: [.command])
+                if keyboardShortcuts {
+                    Button("Allow") { onDecision("approve", note) }
+                        .buttonStyle(JugnuButtonStyle(kind: .primary, compact: true))
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .help("Allow (⌘Return)")
+                } else {
+                    Button("Allow") { onDecision("approve", note) }
+                        .buttonStyle(JugnuButtonStyle(kind: .primary, compact: true))
+                }
             }
         }
-        .padding(12)
+        .padding(11)
         .background(
-            RoundedRectangle(cornerRadius: Theme.radiusMedium)
-                .fill(Theme.panelSolid)
-                .overlay(RoundedRectangle(cornerRadius: Theme.radiusMedium).stroke(riskColor.opacity(0.45), lineWidth: 1))
+            RoundedRectangle(cornerRadius: Theme.radiusMedium + 2, style: .continuous)
+                .fill(Theme.panelRaised)
         )
-        .elevation(3)
-    }
-}
-
-private struct ApprovalButtonStyle: ButtonStyle {
-    enum Kind { case primary, secondary }
-    let kind: Kind
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(Theme.text(11.5, weight: .semibold))
-            .padding(.horizontal, 11)
-            .padding(.vertical, 5)
-            .foregroundStyle(kind == .primary ? Theme.windowBackground : Theme.ink)
-            .background(Capsule().fill(kind == .primary ? Theme.clay : Color.white.opacity(0.08)))
-            .scaleEffect(configuration.isPressed ? 0.95 : 1)
-            .animation(Theme.Motion.press, value: configuration.isPressed)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusMedium + 2, style: .continuous)
+                .stroke(tint.opacity(0.35), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
     }
 }
