@@ -4,89 +4,129 @@ spotify_service.py -- resolving a song name to a real Spotify track URI.
 WHY THIS EXISTS
 ---------------
 Spotify's AppleScript dictionary can play a URI but has no search command,
-and `play track` accepts only a real track/album/playlist URI. The old
-play_song sent `spotify:search:<song> <artist>`, which is not a playable
-URI at all. Spotify silently ignores URIs it can't resolve AND still
-returns success to AppleScript, so the tool reported
+and `play track` accepts only a real track/album/playlist URI. Sending it
+`spotify:search:<song> <artist>` doesn't work -- Spotify silently ignores
+URIs it can't resolve AND still returns success to AppleScript, so a caller
+checking only the exit status gets a false positive every time.
 
-    "Playing 'Blinding Lights' by The Weeknd on Spotify"
+Driving Spotify's UI instead isn't an option either -- it's an Electron app
+that publishes 253 accessibility elements and zero named controls, so
+there's nothing to find or click. AppleScript genuinely cannot search
+Spotify; this module exists to do that resolution somewhere else, once,
+before Spotify.swift ever gets involved.
 
-on every single call while nothing ever played. Verified: after such a
-call, `name of current track` raises because nothing is loaded.
+TWO WAYS TO RESOLVE A NAME, TRIED IN THIS ORDER
+------------------------------------------------
+1. Spotify's own Web API (Client Credentials flow), *only if*
+   SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET are set. Official, accurate,
+   rate-limit-friendly. Nothing here requires it anymore, but it's used
+   automatically when present because it's the more reliable path.
 
-Driving Spotify's UI instead isn't an option either -- it's an Electron
-app that publishes 253 accessibility elements and zero named controls, so
-there is nothing to find or click.
+2. A credential-free fallback, used whenever those env vars are absent:
+   search the web for the matching open.spotify.com/track link, then read
+   that track's own public page for its title/artist/album. No dashboard
+   account, no keys, nothing to configure -- it works the moment this file
+   is dropped in.
 
-That leaves the Web API, which is why this module exists.
+   This leans on two things that are public by design, not reverse-engineered:
+     - a plain web search (DuckDuckGo's no-JS HTML results page)
+     - the Open Graph / JSON-LD metadata Spotify puts on every track page
+       so Slack/iMessage/etc. can render a link preview without login
+   Deliberately NOT used: the various "anonymous open.spotify.com token"
+   tricks floating around. Spotify has been actively hardening that
+   endpoint (it now wants a TOTP computed from a secret embedded in their
+   web player JS), which makes it exactly the kind of thing that reports
+   success today and breaks silently next month. Scraping a public page's
+   preview metadata doesn't fight that arms race.
 
-CREDENTIALS
------------
-Uses the Client Credentials flow: an app-level token, no user login, no
-redirect, no browser. Search is a public catalogue endpoint, so this is
-all it needs.
+   Trade-off, stated plainly: this depends on page markup and a search
+   engine's HTML rather than a supported API, so treat it as
+   good-for-personal-use, not bulletproof. If Spotify reshuffles its page
+   markup or the search backend starts blocking scripted requests, this
+   can start returning fewer/no results without warning. If that starts
+   happening a lot, grabbing free credentials (path 1) is the fix -- see
+   CREDENTIALS below. Either way, Spotify.swift still verifies every play
+   by reading the player state back, so a bad resolution shows up as a
+   clear "not playing" error rather than a silent no-op.
 
+CREDENTIALS (OPTIONAL)
+-----------------------
+Only needed if you want the more accurate/durable path:
   1. https://developer.spotify.com/dashboard -> Create app (any name)
   2. Copy the Client ID and Client Secret
   3. export SPOTIFY_CLIENT_ID=...  SPOTIFY_CLIENT_SECRET=...
-
-Takes about two minutes and costs nothing. Without it, resolution is
-impossible and the tools say so plainly rather than failing vaguely.
+Takes about two minutes and costs nothing. Without it, search still works
+via the fallback above.
 """
 
 from __future__ import annotations
 
-import base64
+import html
+import json
 import os
+import re
 import threading
 import time
+from urllib.parse import unquote
 
 import requests
 
 _TOKEN_URL = "https://accounts.spotify.com/api/token"
 _SEARCH_URL = "https://api.spotify.com/v1/search"
+_DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 
-# Cached app token. These last an hour; re-fetching one per search would add
-# a needless round trip to every play.
+_TRACK_ID_RE = re.compile(r"open\.spotify\.com/track/([A-Za-z0-9]{22})")
+_LD_JSON_RE = re.compile(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', re.S)
+_TITLE_TAG_RE = re.compile(r"<title>([^<]*)</title>")
+
+# A plain desktop-browser UA. Not spoofing anything beyond "this is a
+# browser, not a bare script" -- the pages fetched here are the same ones
+# a browser gets with no login.
+_BROWSER_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                    "Version/17.4 Safari/605.1.15"),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+# Cached app token for path 1. These last an hour; re-fetching one per
+# search would add a needless round trip to every play.
 _token: str | None = None
 _token_expires_at: float = 0.0
 _token_lock = threading.Lock()
 
 
-class SpotifyNotConfigured(RuntimeError):
-    """Raised when no client credentials are available. Carries the setup
-    steps, because 'not configured' is only useful if it says what to do."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            "Spotify search needs API credentials, which take about two minutes to set "
-            "up and cost nothing:\n"
-            "  1. Open https://developer.spotify.com/dashboard and create an app\n"
-            "  2. Copy its Client ID and Client Secret\n"
-            "  3. Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in the environment "
-            "Jugnu launches with, then restart the backend\n"
-            "Without them a song NAME cannot be turned into a playable Spotify URI -- "
-            "Spotify's own AppleScript has no search command. Controlling playback "
-            "(pause, skip, volume, what's playing) works without any of this."
-        )
+class SpotifyLookupError(RuntimeError):
+    """A search failure that isn't 'no matching track' -- the search
+    backend or a track page couldn't be reached, or credentials that were
+    explicitly set turned out to be wrong."""
 
 
-def _credentials() -> tuple[str, str]:
-    cid = os.environ.get("SPOTIFY_CLIENT_ID", "").strip()
-    secret = os.environ.get("SPOTIFY_CLIENT_SECRET", "").strip()
-    if not cid or not secret:
-        raise SpotifyNotConfigured()
-    return cid, secret
+# Old name, kept as an alias so existing callers (tools.py does
+# `except SpotifyNotConfigured`) keep working unmodified. Nothing is
+# actually *unconfigured* any more -- both paths work with zero setup --
+# this now only fires if SPOTIFY_CLIENT_ID/SECRET are set but wrong.
+SpotifyNotConfigured = SpotifyLookupError
 
+
+def _has_credentials() -> bool:
+    return bool(os.environ.get("SPOTIFY_CLIENT_ID", "").strip()
+                and os.environ.get("SPOTIFY_CLIENT_SECRET", "").strip())
+
+
+# ─────────────────────────── Path 1: official API ───────────────────────
 
 def _access_token() -> str:
-    """App token, cached until shortly before it expires."""
+    """App token via Client Credentials. Only called when both env vars
+    are set -- see _has_credentials."""
     global _token, _token_expires_at
     with _token_lock:
         if _token and time.time() < _token_expires_at - 30:
             return _token
 
-        cid, secret = _credentials()
+        import base64
+        cid = os.environ["SPOTIFY_CLIENT_ID"].strip()
+        secret = os.environ["SPOTIFY_CLIENT_SECRET"].strip()
         basic = base64.b64encode(f"{cid}:{secret}".encode()).decode()
         resp = requests.post(
             _TOKEN_URL,
@@ -96,9 +136,10 @@ def _access_token() -> str:
             timeout=15,
         )
         if resp.status_code == 400:
-            raise RuntimeError(
-                "Spotify rejected the client credentials. Check SPOTIFY_CLIENT_ID and "
-                "SPOTIFY_CLIENT_SECRET match an app on developer.spotify.com."
+            raise SpotifyLookupError(
+                "Spotify rejected SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET. Check "
+                "they match an app on developer.spotify.com, or unset them "
+                "entirely to use the credential-free search instead."
             )
         resp.raise_for_status()
         payload = resp.json()
@@ -107,9 +148,7 @@ def _access_token() -> str:
         return _token
 
 
-def search_tracks(query: str, limit: int = 5) -> list[dict]:
-    """Search the public catalogue. Returns the fields needed to pick a
-    track and play it, newest-relevance first as Spotify ranks them."""
+def _search_tracks_via_api(query: str, limit: int) -> list[dict]:
     token = _access_token()
     resp = requests.get(
         _SEARCH_URL,
@@ -127,27 +166,163 @@ def search_tracks(query: str, limit: int = 5) -> list[dict]:
             "uri": t.get("uri", ""),
             "popularity": t.get("popularity", 0),
         }
-        for t in items
-        if t.get("uri")
+        for t in items if t.get("uri")
     ]
+
+
+# ───────────────────── Path 2: credential-free fallback ─────────────────
+
+def _candidate_track_ids(query: str, limit: int) -> list[str]:
+    """Finds open.spotify.com/track/<id> links for the query via
+    DuckDuckGo's no-JS HTML results page -- a public search results page,
+    not an API, so there's nothing to register or authenticate."""
+    resp = requests.get(
+        _DDG_HTML_URL,
+        params={"q": f"{query} site:open.spotify.com/track"},
+        headers=_BROWSER_HEADERS,
+        timeout=15,
+    )
+    resp.raise_for_status()
+    page = unquote(resp.text)
+    ids: list[str] = []
+    for match in _TRACK_ID_RE.finditer(page):
+        track_id = match.group(1)
+        if track_id not in ids:
+            ids.append(track_id)
+        if len(ids) >= limit:
+            break
+    return ids
+
+
+def _meta_tag(page: str, prop: str) -> str:
+    pattern = re.escape(prop)
+    m = (re.search(rf'<meta[^>]+property="{pattern}"[^>]+content="([^"]*)"', page)
+         or re.search(rf'<meta[^>]+content="([^"]*)"[^>]+property="{pattern}"', page))
+    return html.unescape(m.group(1)) if m else ""
+
+
+def _artist_name(by_artist) -> str:
+    if isinstance(by_artist, list):
+        by_artist = by_artist[0] if by_artist else {}
+    if isinstance(by_artist, dict):
+        return by_artist.get("name", "")
+    if isinstance(by_artist, str):
+        return by_artist
+    return ""
+
+
+def _track_metadata(track_id: str) -> dict | None:
+    """Reads the track's own public page -- no login needed, since this is
+    exactly what Spotify serves so chat apps can render a link preview.
+    Tries three independent parsing strategies, most-structured first, so
+    a change to one doesn't take the whole thing down."""
+    url = f"https://open.spotify.com/track/{track_id}"
+    try:
+        resp = requests.get(url, headers=_BROWSER_HEADERS, timeout=15)
+        resp.raise_for_status()
+    except requests.RequestException:
+        return None
+    page = resp.text
+
+    # Tier 1: embedded JSON-LD (schema.org MusicRecording) -- structured,
+    # least likely to shift wording.
+    for block in _LD_JSON_RE.findall(page):
+        try:
+            data = json.loads(block)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        types = data.get("@type")
+        if types == "MusicRecording" or (isinstance(types, list) and "MusicRecording" in types):
+            name = data.get("name", "")
+            if name:
+                return {
+                    "name": name,
+                    "artist": _artist_name(data.get("byArtist")),
+                    "album": (data.get("inAlbum") or {}).get("name", "") if isinstance(data.get("inAlbum"), dict) else "",
+                    "uri": f"spotify:track:{track_id}",
+                    "popularity": 0,
+                }
+
+    # Tier 2: Open Graph tags, present for link-preview purposes.
+    title = _meta_tag(page, "og:title")
+    if title:
+        description = _meta_tag(page, "og:description")  # usually "Artist · Song · Year"
+        artist = description.split("·")[0].strip() if "·" in description else ""
+        return {"name": title, "artist": artist, "album": "",
+                "uri": f"spotify:track:{track_id}", "popularity": 0}
+
+    # Tier 3: the plain <title> tag, e.g. "Song - song and lyrics by Artist | Spotify".
+    m = _TITLE_TAG_RE.search(page)
+    if m:
+        raw = html.unescape(m.group(1))
+        raw = re.sub(r"\s*\|\s*Spotify\s*$", "", raw)
+        m2 = re.match(r"(.+?)\s*-\s*song(?: and lyrics)? by\s+(.+)$", raw, re.I)
+        if m2:
+            return {"name": m2.group(1).strip(), "artist": m2.group(2).strip(),
+                    "album": "", "uri": f"spotify:track:{track_id}", "popularity": 0}
+
+    return None
+
+
+def _search_tracks_via_scrape(query: str, limit: int) -> list[dict]:
+    try:
+        ids = _candidate_track_ids(query, limit=max(limit, 5))
+    except requests.RequestException as e:
+        raise SpotifyLookupError(f"Couldn't reach the search backend: {e}") from e
+
+    results: list[dict] = []
+    for track_id in ids:
+        meta = _track_metadata(track_id)  # None on any per-track failure; just skip it
+        if meta:
+            results.append(meta)
+        if len(results) >= limit:
+            break
+    return results
+
+
+# ──────────────────────────────── Public API ─────────────────────────────
+
+def search_tracks(query: str, limit: int = 5) -> list[dict]:
+    """Search for tracks and return the fields needed to pick one and play
+    it. Uses the official Web API when SPOTIFY_CLIENT_ID/SECRET are set;
+    otherwise (the default) falls back to the credential-free web search
+    + page-read described at the top of this file."""
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    if _has_credentials():
+        try:
+            return _search_tracks_via_api(query, limit)
+        except SpotifyLookupError:
+            raise  # credentials are set but wrong -- worth surfacing clearly
+        except Exception:
+            pass  # network hiccup etc. -- fall through to the free path below
+
+    return _search_tracks_via_scrape(query, limit)
 
 
 def resolve_track(song: str, artist: str = "") -> dict:
     """Best single match for a song, optionally narrowed by artist.
 
-    Uses Spotify's field filters (`track:` / `artist:`) when an artist is
-    given, which is markedly more accurate than concatenating the two into
-    a free-text query -- "Hello Adele" as loose text happily matches a
-    track called "Hello" by someone else entirely.
+    When the official API is available, uses Spotify's field filters
+    (`track:` / `artist:`), which are markedly more accurate than
+    concatenating the two into free text -- "Hello Adele" as loose text
+    happily matches a track called "Hello" by someone else entirely. The
+    credential-free path can't use those filters (they're an API-only
+    syntax), so it relies on search-engine relevance instead.
     """
     song = (song or "").strip()
     if not song:
         raise ValueError("song is required")
-
     artist = (artist or "").strip()
+
     attempts = []
-    if artist:
+    if artist and _has_credentials():
         attempts.append(f'track:"{song}" artist:"{artist}"')
+    if artist:
         attempts.append(f"{song} {artist}")
     attempts.append(song)
 
