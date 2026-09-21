@@ -561,6 +561,12 @@ final class AppState: ObservableObject {
             thinking = false
             statusLabel = "ready"
             if let runId = event.payload["run_id"]?.string {
+                let usage = event.payload["usage"]
+                ensureRun(runId, requestId: event.id ?? "", goal: messages.last(where: { $0.role == .user })?.content ?? "")
+                updateRun(runId) { run in
+                    run.modelCalls = usage?["calls"]?.int
+                    run.tokens = (usage?["prompt_tokens"]?.int ?? 0) + (usage?["completion_tokens"]?.int ?? 0)
+                }
                 finishRun(runId, state: event.payload["cancelled"]?.bool == true ? "cancelled" : "done")
             }
             progressLine = nil

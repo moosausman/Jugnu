@@ -174,7 +174,7 @@ def list_runs(limit: int = 50, statuses: tuple | None = None, full: bool = False
     return out
 
 
-def pending_question(max_age_seconds: float = 3 * 3600) -> dict | None:
+def pending_question(max_age_seconds: float = 30 * 60) -> dict | None:
     """The most recent foreground run waiting on the user's answer."""
     cutoff = time.time() - max_age_seconds
     with closing(_connect()) as conn:

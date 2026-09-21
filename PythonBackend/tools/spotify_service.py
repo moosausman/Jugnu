@@ -436,7 +436,7 @@ def _itunes_candidates(term: str, entity: str = "song", limit: int = 3) -> list[
 
 
 def _wd_resolve(kind: str, name: str, artist: str = "") -> dict | None:
-    """Best Wikidata match for a track / artist / album, verified against
+    """Best Wikidata match for a track / artist / album, verified against1
     Spotify's own oEmbed title. None if nothing convincing is found."""
     scored = []
     for row in _wd_candidates(kind, name):
@@ -591,7 +591,8 @@ def search_spotify(query: str, kind: str = "track", limit: int = 5) -> list[dict
     playlists). Raises SpotifyLookupError if the search couldn't run."""
     from tools.macbridge import call
     try:
-        r = call("/spotify/search", {"query": query, "type": _WEB_TYPES[kind], "limit": limit}, timeout=30)
+        r = call("/spotify/search", {"query": query, "type": _WEB_TYPES[kind], "limit": limit}, timeout=30,
+                 session="primary")
     except Exception as e:
         raise SpotifyLookupError(f"Spotify search unavailable: {e}") from e
     if not r.get("ok"):

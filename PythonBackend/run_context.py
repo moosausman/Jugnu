@@ -50,6 +50,15 @@ class RunContext:
     task_approvals: set = field(default_factory=set)     # (tool, capability) keys
     started_at: float = field(default_factory=time.time)
     notes: dict = field(default_factory=dict)             # working memory for this run
+    # Model usage by this run -- what it cost. Filled in by llm_client.
+    usage: dict = field(default_factory=lambda: {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
+    _usage_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def add_usage(self, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
+        with self._usage_lock:
+            self.usage["calls"] += 1
+            self.usage["prompt_tokens"] += int(prompt_tokens or 0)
+            self.usage["completion_tokens"] += int(completion_tokens or 0)
 
     # The task a piece of code is working on. Per thread (a ContextVar), not
     # per run: with parallel tasks, several run at once inside one run.

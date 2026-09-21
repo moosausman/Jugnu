@@ -47,9 +47,11 @@ from memory import agent_system_prompt, facts_as_string, persona_reply
 from planner import Plan, Task, replan
 
 MAX_PARALLEL = int(os.environ.get("JUGNU_MAX_PARALLEL_TASKS", "4"))
-MAX_REPLANS = 2
+MAX_REPLANS = 1
 TASK_TIMEOUT = float(os.environ.get("JUGNU_TASK_TIMEOUT", str(20 * 60)))
-STEPS_BY_TIER = {"fast": 10, "standard": 20, "deep": 30}
+# Tool-call budgets per task. Every step re-sends the whole conversation, so
+# a long loop is the single biggest cost; well-chosen tools finish in a few.
+STEPS_BY_TIER = {"fast": 6, "standard": 12, "deep": 20}
 ROLE_BY_TIER = {"fast": "FAST", "standard": "PLANNER", "deep": "DEEP"}
 
 # Agents that can produce a useful (clearly caveated) result from their own
@@ -342,6 +344,7 @@ class PlanRunner:
                 _emit_task(self.ctx, task)
                 return
             task.note = verdict.reason
+            task.recovery = verdict.recovery
             if verdict.recovery == "ask_user":
                 with self._state_lock:
                     self.question = verdict.question or result.needs_input or verdict.reason
@@ -364,8 +367,17 @@ class PlanRunner:
     def _maybe_replan(self, failed: Task) -> bool:
         if failed.optional or self.plan.replans >= MAX_REPLANS or self.stop_scheduling:
             return False
-        if any(k in (failed.note or "").lower() for k in ("declined", "permission", "switched off")):
-            return False  # the user's choice or a missing grant -- replanning won't change that
+        # A simple request: if it failed, say why instead of paying for a
+        # new plan and a second attempt at the same thing.
+        if self.plan.complexity == "simple":
+            return False
+        # Only when the verifier judged that a different route could work --
+        # not for a missing permission, a declined action or a hard stop.
+        if getattr(failed, "recovery", "replan") != "replan":
+            return False
+        if any(k in (failed.note or "").lower() for k in ("declined", "permission", "switched off",
+                                                           "not authorized", "didn't go ahead")):
+            return False
         self.ctx.progress(f"Rethinking the plan: {failed.title} didn't work")
         try:
             spec = replan(self.plan, why=f"Task {failed.id} ({failed.title}) failed: {failed.note}",
@@ -457,13 +469,16 @@ def execute_plan(plan, recent_context="", on_task_start=None, on_status=None, on
         return runner.question
 
     tasks = _topological_order(plan.tasks)
-    # A single conversational/quick task: its own result is the answer --
-    # unless it failed, in which case the user gets an explanation.
+    # A single conversational/quick task: its own result is the answer.
     if len(tasks) == 1 and tasks[0].status == "done":
         return tasks[0].result or "Done."
+    # A simple request that failed: the agent's own explanation (or the
+    # stop message) already says why -- no extra model call to reword it.
+    if len(tasks) == 1 and plan.complexity == "simple" and (tasks[0].result or tasks[0].note):
+        return tasks[0].result or f"I couldn't do that: {tasks[0].note}"
 
     objective = None
-    if plan.request_type in ("agentic", "background") and len(tasks) > 1:
+    if plan.complexity == "complex" and len(tasks) > 1:
         objective = verifier.check_objective(plan, tasks)
         audit.log("verification", run_id=runner.ctx.run_id, status="objective_" + ("passed" if objective.passed else "gaps"),
                   summary=objective.reason, detail=objective.model_dump())
@@ -512,9 +527,10 @@ def synthesize(plan: Plan, tasks: list, objective=None) -> str:
     lines.append("\n" + _SYNTHESIS_RULES)
     role = "DEEP" if plan.complexity == "complex" else "AGENT"
     answer = persona_reply("\n".join(lines), role=role)
-    # Quality control whenever the reply could overclaim: complex work, or
-    # anything that didn't fully succeed.
-    if answer and (plan.complexity == "complex" or not_done or (objective is not None and not objective.passed)):
+    # A second model pass reviewing the reply: for complex work, and whenever
+    # something didn't happen -- the one case where a reply most often
+    # overclaims. A fully successful ordinary run skips it.
+    if answer and (plan.complexity == "complex" or not_done):
         answer = _quality_control(answer, "\n".join(lines[:-1]), role) or answer
     answer = _check_claimed_files(answer, "\n".join(lines[:-1]), role)
     return answer or "I finished, but couldn't put together a summary -- the details are in the activity log."

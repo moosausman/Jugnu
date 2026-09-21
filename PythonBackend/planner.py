@@ -72,6 +72,7 @@ class Task:
         self.attempts = 0
         self.result = ""
         self.note = ""
+        self.recovery = ""   # the verifier's suggested recovery after a failed attempt
 
     @classmethod
     def from_spec(cls, spec: TaskSpec) -> "Task":

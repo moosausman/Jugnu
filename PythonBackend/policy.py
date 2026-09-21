@@ -177,6 +177,7 @@ TOOL_POLICIES: dict[str, ToolPolicy] = {
     "whatsapp_open_chat": ToolPolicy(L, "messaging"), "whatsapp_open_chat_by_name": ToolPolicy(L, "messaging"),
     "whatsapp_draft": ToolPolicy(L, "messaging", note="draft only -- not sent"),
     "whatsapp_send": ToolPolicy(H, "messaging", reversible=False, note="sends a message"),
+    "whatsapp_message": ToolPolicy(H, "messaging", reversible=False, note="sends a message"),
     # lookups
     **{name: ToolPolicy(R, "location") for name in (
         "geocode_location", "get_weather", "wikipedia_search", "wikipedia_summary",
@@ -687,6 +688,8 @@ def summarize_call(tool: str, args: dict) -> str:
         s = f"Email {args.get('to', '?')}: \"{args.get('subject', '')}\""
     elif tool == "whatsapp_send":
         s = f"WhatsApp {args.get('expected_recipient', '?')}: \"{str(args.get('expected_text', ''))[:120]}\""
+    elif tool == "whatsapp_message":
+        s = f"WhatsApp {args.get('to', '?')}: \"{str(args.get('text', ''))[:160]}\""
     elif tool == "applescript_run":
         s = "AppleScript: " + " ".join(str(args.get("script", "")).split())[:200]
     elif tool in ("file_delete", "file_trash", "file_write", "file_append", "file_read"):

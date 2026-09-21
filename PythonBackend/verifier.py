@@ -224,7 +224,9 @@ def check_task(task, agent_result, *, complexity: str = "standard") -> Verdict:
                        recovery="retry")
 
     last_failed = getattr(agent_result, "last_failed", False)
-    needs_judgement = bool(task.completion_criteria) and (task.risk != "read" or complexity != "simple")
+    # A model verdict costs a call per task. Tool results are the evidence
+    # for ordinary work; only complex plans get the extra judgement.
+    needs_judgement = bool(task.completion_criteria) and complexity == "complex"
     if not needs_judgement:
         if last_failed and not any(o.ok for o in outcomes):
             return Verdict(passed=False, confidence=0.7, reason="Every tool call failed.", recovery="replan")

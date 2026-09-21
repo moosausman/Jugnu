@@ -43,7 +43,7 @@ import policy
 import run_context
 from redact import redact
 
-MAX_RESULT_CHARS = 6000
+MAX_RESULT_CHARS = 4000   # every step re-sends earlier results; keep them lean
 DEFAULT_TIMEOUT = 180.0
 MAX_IDENTICAL_FAILURES = 2      # same tool + same args failing this often -> blocked
 MAX_TOOL_FAILURES_PER_RUN = 6   # same tool failing this often in one run -> blocked

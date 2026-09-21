@@ -264,14 +264,17 @@ def handle_send(conversation: list, request_id: str, text: str) -> None:
             on_tool_call=on_tool_call,
             on_tool_result=on_tool_result,
         )
-        emit({"type": "assistant", "id": request_id, "run_id": ctx.run_id, "content": answer})
-        audit.log("turn_end", run_id=ctx.run_id, status="ok", summary=answer[:1000])
+        # What the turn cost: model calls and tokens (see llm_client._record_usage).
+        emit({"type": "assistant", "id": request_id, "run_id": ctx.run_id, "content": answer, "usage": ctx.usage})
+        audit.log("turn_end", run_id=ctx.run_id, status="ok", summary=answer[:1000],
+                  detail={"usage": ctx.usage, "seconds": round(time.time() - ctx.started_at, 1)})
 
     except run_context.RunCancelled:
         answer = "Stopped. Nothing further will run for that request."
         session.record_interrupted_turn(conversation, answer)
-        emit({"type": "assistant", "id": request_id, "run_id": ctx.run_id, "content": answer, "cancelled": True})
-        audit.log("turn_end", run_id=ctx.run_id, status="cancelled")
+        emit({"type": "assistant", "id": request_id, "run_id": ctx.run_id, "content": answer, "cancelled": True,
+              "usage": ctx.usage})
+        audit.log("turn_end", run_id=ctx.run_id, status="cancelled", detail={"usage": ctx.usage})
     except Exception as e:
         message = redact(str(e))
         log(f"error during turn: {message}")

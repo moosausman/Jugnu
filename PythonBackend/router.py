@@ -79,3 +79,61 @@ def session_hint(text: str) -> str | None:
 
 def wants_background(text: str) -> bool:
     return bool(_BACKGROUND.search(text or ""))
+
+
+# ---------------------------------------------------------------------------
+# Direct routing: single-intent requests skip the planner
+# ---------------------------------------------------------------------------
+# The planner is one full model call (a 2.6k-token prompt plus context) that
+# for most requests just answers "one task, agent X". When a request is
+# plainly about one thing, pick the agent here and run it directly.
+# Anything that looks multi-step, scheduled, long-form or ambiguous returns
+# None and still gets a proper plan.
+
+_MULTI_STEP = re.compile(
+    r"\b(?:and then|then|after that|afterwards|followed by|as well as|and also|once (?:that'?s|it'?s) done|first\b.*\bthen)\b"
+    r"|;|\band (?:open|send|create|play|email|message|text|search|find|make|write|schedule|remind|add|delete|move|"
+    r"save|book|download|install|reply|call|check|tell)\b", re.I)
+_NEEDS_PLANNER = re.compile(
+    r"\b(?:every|each (?:day|week|morning|night)|daily|weekly|remind me|in \d+ (?:min|minute|hour|second)s?|at \d|"
+    r"tomorrow at|later|schedule (?:a|it|this)|research|report|compare|study guide|essay|plan (?:for|my|a)|"
+    r"build|code|debug|fix|refactor|website|app for|project|analy[sz]e|summari[sz]e (?:my|the) (?:day|week)|"
+    r"recap|daily review|in the background|jugnu account|my account)\b", re.I)
+
+_DOMAINS = [
+    ("whatsapp", re.compile(r"\bwhats ?app\b", re.I)),
+    ("mail", re.compile(r"\b(?:e-?mails?|inbox|gmail|mailbox)\b", re.I)),
+    ("calendar", re.compile(r"\b(?:calendar|meetings?|events?|appointments?|reminders?|to-?do|"
+                            r"what'?s on my (?:day|schedule)|am i free|my schedule)\b", re.I)),
+    ("notion", re.compile(r"\bnotion\b", re.I)),
+    ("notes", re.compile(r"\b(?:apple notes|notes app|my notes|a note)\b", re.I)),
+    ("contacts", re.compile(r"\b(?:phone number|contact info|contacts?|number for)\b", re.I)),
+    ("lookup", re.compile(r"\b(?:weather|forecast|temperature|raining|rain today|snow)\b", re.I)),
+    ("research", re.compile(r"\b(?:search(?: the web| for)?|google|look up|latest|news|who won|score|"
+                            r"price of|how much (?:is|does)|stock|release date)\b", re.I)),
+    ("system", re.compile(r"^play\b|\b(?:spotify|songs?|music|playlist|album|volume|mute|battery|lock (?:the |my )?screen|"
+                          r"sleep|clipboard|quit|close (?:the )?\w+ app|open \w+)\b", re.I)),
+    ("files", re.compile(r"\b(?:files?|folders?|downloads|desktop|documents|pdf|finder|rename|unzip|zip)\b", re.I)),
+    ("browser", re.compile(r"\b(?:safari|tabs?|website|webpage|url)\b", re.I)),
+    ("memory", re.compile(r"^(?:remember|forget|note that|don'?t forget)\b|\bwhat do you (?:know|remember)\b", re.I)),
+]
+
+# Plain questions a model answers from its own knowledge: no tools, one call.
+_ANSWERABLE = re.compile(r"^(?:what|why|how|who|explain|define|describe|tell me (?:a|about)|write (?:me )?a "
+                         r"(?:poem|joke|haiku|limerick)|give me (?:an? )?(?:example|idea|tip)s?|is it|should i|"
+                         r"can you explain|what'?s the difference)\b", re.I)
+_TIME_SENSITIVE = re.compile(r"\b(?:today|tonight|now|latest|current|currently|recent|news|this (?:week|month|year)|"
+                             r"yesterday|last (?:night|week)|20[2-9]\d|score|price|stock|weather|open now)\b", re.I)
+
+
+def direct_agent(text: str) -> str | None:
+    """The one agent a simple request needs, or None when it should be planned."""
+    t = " ".join((text or "").split())
+    if not t or len(t.split()) > 30 or _MULTI_STEP.search(t) or _NEEDS_PLANNER.search(t):
+        return None
+    matched = [name for name, pattern in _DOMAINS if pattern.search(t)]
+    if len(matched) == 1:
+        return matched[0]
+    if not matched and _ANSWERABLE.search(t) and not _TIME_SENSITIVE.search(t):
+        return "answer"
+    return None

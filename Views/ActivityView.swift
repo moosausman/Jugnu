@@ -205,6 +205,7 @@ struct RunDetail: View {
                         if !run.tasks.isEmpty { Pill(text: "\(run.completedTasks)/\(run.tasks.count) done") }
                         if run.origin != "user" { Pill(text: run.origin) }
                         if !run.session.isEmpty && run.session != "primary" { Pill(text: "Jugnu account") }
+                        if let cost = run.costLabel { Pill(text: cost, tint: Theme.inkFaint) }
                     }
                 }
                 Spacer()

@@ -83,6 +83,27 @@ def _apply_session(plan: Plan) -> Optional[str]:
     return None
 
 
+def _fast_path(user_text: str) -> Optional[str]:
+    try:
+        import fastpath
+        return fastpath.try_handle(user_text)
+    except run_context.RunCancelled:
+        raise
+    except Exception as e:  # a pattern miss or a bug here must never cost the turn
+        import sys
+        print(f"[session] fast path skipped: {e}", file=sys.stderr, flush=True)
+        return None
+
+
+def _direct_plan(user_text: str, agent: str) -> Plan:
+    """A one-task plan without asking the planner. Read-risk so the verifier
+    judges it by what the tools returned rather than demanding a change, and
+    one attempt: a simple request that fails should say why, not try again."""
+    from planner import Task
+    task = Task(1, agent, user_text, title=user_text[:60], risk="read", max_attempts=1)
+    return Plan(user_text, [task], objective=user_text, request_type="quick_action", complexity="simple")
+
+
 def _checkpointer(run_id: str):
     def _save(plan, shared):
         tasks_store.checkpoint(run_id, plan, shared, status="running", session=macbridge.active_session())
@@ -159,6 +180,17 @@ def run_turn(
     except Exception:
         pass
 
+    # Zero model calls: one obvious tool call ("play X", "pause", "open
+    # Safari") runs straight through, unless a paused run is waiting on an
+    # answer (the message might be that answer).
+    if not tasks_store.pending_question():
+        quick = _fast_path(user_text)
+        if quick is not None:
+            audit.log("plan", run_id=ctx.run_id, summary=f"(fast path) {user_text}", detail={"fast_path": True})
+            _finish(conversation, quick)
+            smem.record_event("user_message", user_text)
+            return quick
+
     # Context first, THEN log the message -- logging first let recall() find
     # this very message and feed it back as "relevant memory".
     full_context = build_context(conversation[:-1], user_text)
@@ -170,7 +202,10 @@ def run_turn(
                                      on_plan, on_task_start, on_status, on_tool_call, on_tool_result)
 
     tasks_store.create(ctx.run_id, user_text, origin=ctx.origin, request_id=ctx.request_id, context=full_context)
-    plan = make_plan(user_text, recent_context=full_context)
+    # A request plainly about one thing goes straight to that agent; only
+    # multi-step, scheduled or ambiguous requests pay for the planner.
+    direct = router.direct_agent(user_text)
+    plan = _direct_plan(user_text, direct) if direct else make_plan(user_text, recent_context=full_context)
     # Explicit words beat model inference: "on the Jugnu account" / "on my
     # account" and "in the background" are honoured even when the planner
     # misses them (it has).

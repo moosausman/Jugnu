@@ -58,6 +58,23 @@ _KEYBOARD_TOOL_NAMES = [
 
 
 _MAX_TOOLS_PER_AGENT = 128
+
+# The generalist's toolbox: the core of every domain, for the task that
+# genuinely spans several. It used to carry every tool (126 schemas, ~17k
+# tokens re-sent on every step); every tool it drops is still held by the
+# specialist for that domain.
+_OPERATOR_TOOLS = [
+    "search_web", "safari_open", "safari_read_page", "safari_current_tab", "safari_tabs", "document_read",
+    "document_create", "file_read", "file_write", "file_append", "file_list", "file_search",
+    "file_fuzzy_search", "file_move", "file_copy", "file_mkdir", "file_trash", "file_exists", "file_info",
+    "shell_run", "shell_run_script", "applescript_run", "open_app", "close_app", "clipboard_get",
+    "clipboard_set", "notifications_send", "finder_reveal", "play_song", "spotify_control",
+    "calendar_list", "calendar_create", "reminders_list", "reminders_create", "set_timer",
+    "schedule_task", "mail_list", "mail_search", "mail_send", "notes_search", "notes_create",
+    "contacts_search", "whatsapp_message", "get_weather", "remember", "recall_memory",
+    "window_list", "window_focus", "ui_find", "ui_action", "keyboard_type", "keyboard_press",
+    "mouse_click", "screen_capture", "ocr_screen", "current_session", "set_target_session",
+]
 _OPERATOR_EXCLUDED = {
     n for n in FUNCTIONS if n.startswith(("notion_", "whatsapp_")) or n in {
         "create_temp_email", "check_temp_email", "read_temp_email_message",
@@ -163,21 +180,28 @@ AGENTS = {
         # file_zip, and file_unzip -- all real tools in tools.py that this
         # agent had no way to reach. _validate_registry() below is what
         # caught it this time instead of another manual diff.
+        # Everyday file work only: every schema is re-sent on every step, so
+        # rarely used maintenance tools live with file_maintenance instead.
         tool_names=[
             "document_read", "document_create", "search_documents", "ocr_image",
-            "file_read", "file_write", "file_append", "file_touch",
-            "file_mkdir", "file_move", "file_copy", "file_duplicate",
-            "file_delete", "file_exists", "file_info", "file_list",
-            "file_group", "file_search", "file_preview", "file_head",
-            "file_tail", "file_count_lines", "file_read_range", "file_hash",
-            "file_verify_checksum", "file_diff", "file_find_replace",
-            "file_tree", "file_summarize_folder", "file_recent_files",
-            "file_largest_files", "file_empty_files", "file_empty_directories",
-            "file_broken_symlinks", "file_fuzzy_search", "file_trash",
-            "file_list_trash", "file_restore_from_trash", "file_chmod",
-            "file_permissions", "file_lock", "file_unlock", "file_zip",
-            "file_unzip", "file_batch_move", "file_batch_copy",
-            "file_batch_rename", "file_batch_delete",
+            "file_read", "file_write", "file_append", "file_mkdir", "file_move", "file_copy",
+            "file_delete", "file_exists", "file_info", "file_list", "file_search",
+            "file_fuzzy_search", "file_preview", "file_read_range", "file_find_replace",
+            "file_tree", "file_summarize_folder", "file_recent_files", "file_largest_files",
+            "file_trash", "file_list_trash", "file_restore_from_trash", "file_zip", "file_unzip",
+            "file_batch_move", "file_batch_rename", "file_batch_delete", "file_diff",
+        ],
+    ),
+    "file_maintenance": Agent(
+        name="file_maintenance",
+        role="Less common file housekeeping: checksums and hashes, file permissions and locks, "
+             "empty files/folders, broken symlinks, grouping by type, duplicating, counting lines.",
+        tool_names=[
+            "file_list", "file_exists", "file_info", "file_head", "file_tail", "file_count_lines",
+            "file_group", "file_hash", "file_verify_checksum", "file_empty_files",
+            "file_empty_directories", "file_broken_symlinks", "file_lock", "file_unlock",
+            "file_chmod", "file_permissions", "file_duplicate", "file_touch", "file_batch_copy",
+            "file_trash",
         ],
     ),
     "system": Agent(
@@ -197,7 +221,7 @@ AGENTS = {
         # run, anything that sends, deletes or touches security settings
         # waits for the user's approval.
         tool_names=[
-            "window_list", "window_focus", "window_arrange", "window_set_frame", "window_minimize", "window_close", "speak", "music_control", "system_info", "permissions_check",
+            "window_list", "window_focus", "speak", "music_control", "system_info", "permissions_check",
             "open_app", "close_app", "notifications_send",
             "current_session", "set_target_session",
             "play_song", "play_artist", "play_album", "play_playlist", "spotify_search", "spotify_play_uri",
@@ -207,7 +231,6 @@ AGENTS = {
             "system_get_volume", "system_set_volume", "system_battery",
             "system_sleep", "system_lock",
             "applescript_run",
-            "set_timer", "schedule_task", "list_scheduled_tasks", "cancel_scheduled_task",
         ],
     ),
     "mail": Agent(
@@ -320,13 +343,15 @@ AGENTS = {
              "Web using browser/desktop controls when explicitly needed. Reading "
              "is limited to exposed UI, not a complete message-history database.",
         autonomous_safe=False,
+        # whatsapp_message does the whole send in one call, so this agent no
+        # longer carries the generic keyboard/mouse/screen tools (and their
+        # ~4k tokens of schemas on every step). The automation agent still
+        # has them for anything unusual.
         tool_names=[
-            "whatsapp_status", "whatsapp_open", "whatsapp_open_chat",
-            "whatsapp_open_chat_by_name",
-            "whatsapp_read", "whatsapp_search", "whatsapp_draft", "whatsapp_send",
-            "contacts_search", "contacts_list",
-            "safari_open", "safari_tabs", "safari_current_tab",
-        ] + _KEYBOARD_TOOL_NAMES + _DESKTOP_TOOL_NAMES,
+            "whatsapp_message", "whatsapp_status", "whatsapp_open", "whatsapp_open_chat",
+            "whatsapp_open_chat_by_name", "whatsapp_read", "whatsapp_search",
+            "whatsapp_draft", "whatsapp_send", "contacts_search",
+        ],
     ),
     "notes": Agent(
         name="notes",
@@ -362,17 +387,17 @@ AGENTS = {
     ),
     "operator": Agent(
         name="operator",
-        role="The generalist, with EVERY tool: files, shell, apps, browser, keyboard/mouse/"
-             "screen, mail, calendar, reminders, messaging, web research, Notion, memory. Use "
-             "for a task that genuinely spans several of the domains above in one step, or "
-             "that no specialist covers. Prefer a specialist when one fits.",
+        role="The generalist, with the core tools of every domain: files, shell, apps, browser, "
+             "keyboard/mouse/screen, mail, calendar, reminders, WhatsApp, web research, memory. Use "
+             "only for a task that genuinely spans several domains in one step. Prefer a "
+             "specialist whenever one fits -- it's cheaper and has the full toolset for its domain.",
         # Broad on purpose, but capped: providers limit how many tool schemas
         # one request may carry (OpenAI: 128), and each schema costs context
         # on every call. Specialist-only tools (Notion, WhatsApp internals,
         # rare file maintenance) stay with their specialists. Holding a tool
         # is never permission to use it unchecked -- tool_runtime's policy
         # gate applies to every call regardless of agent.
-        tool_names=[n for n in FUNCTIONS if n not in _OPERATOR_EXCLUDED][:_MAX_TOOLS_PER_AGENT],
+        tool_names=[n for n in _OPERATOR_TOOLS if n in FUNCTIONS],
         exclusive=True,
     ),
 }
@@ -414,7 +439,7 @@ for _agent in AGENTS.values():
 # out, the same way the comments above explain every fix -- this dict is the
 # only thing that stops the check below from failing on them.
 _INTENTIONALLY_UNASSIGNED: dict = {
-    # Empty: the "operator" agent holds every tool, and every call is gated
+    # Empty: every tool is held by at least one specialist, and every call is gated
     # by tool_runtime's policy regardless of which agent makes it. Add an
     # entry (with a reason) only if a tool must be kept from all agents.
 }

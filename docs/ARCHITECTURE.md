@@ -4,13 +4,21 @@
 SwiftUI app ── chat · approval cards · Activity panel (⌘J) · Settings
    │  JSON lines over stdio, full-duplex (bridge.py)
 bridge.py ── TurnWorker (one foreground turn at a time) + management requests
-   ├─ session.py      route → context → plan → dispatch (now / scheduled / background) → persist
-   ├─ router.py       small talk, answers to pending questions, session/background hints
+   ├─ session.py      route → fast path | direct agent | plan → dispatch → persist
+   ├─ fastpath.py     "play X", "pause", "volume 40", "open Safari": one tool call, no model
+   ├─ router.py       small talk, pending answers, session/background hints, and
+   │                  direct_agent(): single-intent requests skip the planner
    ├─ planner.py      goal → validated PlanSpec (schemas.py); replan() after failures
+   │                  (multi-step, scheduled, long-form or ambiguous requests only)
    ├─ executor.py     parallel DAG: exclusive screen lock, retries w/ feedback, replanning,
    │                  partial continuation, checkpoints, objective check, honest synthesis
-   ├─ verifier.py     postconditions (file exists, event listed, app running) + model verdicts
-   ├─ agent_core.py   one agent's tool loop (ask_user pauses the plan)
+   ├─ verifier.py     postconditions (file exists, event listed, app running); model
+   │                  verdicts only for complex plans
+   ├─ agent_core.py   one agent's tool loop (ask_user pauses the plan); stops at once on a
+   │                  missing macOS permission, a switched-off capability or a denial, and
+   │                  after 3 failed calls in a row
+   ├─ search.py       search_web: MacBridge /web/search (DuckDuckGo in WebKit) → top pages →
+   │                  best-matching passages. No model calls.
    ├─ tool_runtime.py validate → policy → approve → run (timeout/cancel) → classify → redact → audit
    │    ├─ policy.py       risk per tool + shell/AppleScript classifiers + decide()
    │    ├─ permissions.py  autonomy mode, capability switches, folder scopes (permissions.json)
@@ -29,7 +37,20 @@ bridge.py ── TurnWorker (one foreground turn at a time) + management request
 MacBridge (Swift, per macOS session: :8765 you, :8766 Jugnu account)
    Files · Shell · AppleScript · Calendar · Reminders · Contacts · Mail · Safari (+page text)
    Keyboard · Mouse · Accessibility · Screen · Windows · OCR (Vision) · Documents (PDFKit)
-   Permission status · Spotify · WhatsApp
+   Permission status · Spotify (+ keyless search) · WhatsApp (+ one-call /whatsapp/message)
+   Web search (off-screen WebKit)
+
+## Cost per request
+Every model call re-sends the agent's instructions and tool schemas, so the
+number of calls is the cost. Roughly:
+* "play X", "pause", "open Safari" -- no model call (fastpath.py)
+* one-domain requests ("what's on my calendar", "who won…") -- the agent's own
+  calls only, usually 2 (no planner, no verifier)
+* questions answerable without tools -- 1 call
+* multi-step work -- planner + agents + one synthesis; verification and
+  reflection only when the plan is complex
+Each turn reports its model calls and tokens (the `assistant` event's
+`usage`, the audit log's `turn_end`, and the Activity panel).
 ```
 
 ## Rules that don't bend
@@ -44,7 +65,8 @@ MacBridge (Swift, per macOS session: :8765 you, :8766 Jugnu account)
 
 ## Tests
 `cd PythonBackend && PythonEnv/bin/python -m unittest discover -s tests`
-(100 tests; `test_bridge_e2e.py` runs the real bridge against a fake model server.)
+(121 tests; `test_bridge_e2e.py` runs the real bridge against a fake model server,
+`test_efficiency.py` covers the fast path, direct routing and the loop's stop rules.)
 
 ## Adding a tool
 1. Write the function (Google-style docstring with `Args:`) in `tools/`.

@@ -78,7 +78,7 @@ def script(system, user_text, last, has_tools):
         if "favourite editor" in user_text:
             return [("remember", {"content": "The user's favourite editor is Helix", "kind": "user",
                                   "key": "pref.editor", "source": "user_stated", "confidence": 0.95})]
-        if "Send Bob" in user_text:
+        if "Send Bob" in user_text or "email Bob" in user_text:  # planned, or routed straight to mail
             return [("mail_send", {"to": "bob@example.com", "subject": "Hi", "body": "Hi Bob"})]
         if "look it up" in user_text:
             return 3.0

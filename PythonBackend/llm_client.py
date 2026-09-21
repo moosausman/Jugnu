@@ -295,7 +295,9 @@ def chat(messages, tools=None, think=False, role="AGENT", keep_alive=None, model
         if tools:
             kwargs["tools"] = tools
         kwargs["keep_alive"] = keep_alive if keep_alive is not None else _OLLAMA_KEEP_ALIVE
-        return _with_retries(lambda: ollama.chat(**kwargs), f"ollama.chat ({resolved_model})")
+        response = _with_retries(lambda: ollama.chat(**kwargs), f"ollama.chat ({resolved_model})")
+        _record_usage(getattr(response, "prompt_eval_count", 0), getattr(response, "eval_count", 0))
+        return response
     if provider == "api":
         return _api_chat(messages, tools=tools, role=role)
     raise ValueError(f"unknown provider {provider!r} (expected 'local' or 'api')")
@@ -421,8 +423,21 @@ def _api_chat(messages, tools, role) -> ChatResponse:
         headers={"Authorization": f"Bearer {_api_key()}", "Content-Type": "application/json"},
         payload=payload,
     )
+    usage = data.get("usage") or {}
+    _record_usage(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
     choice = data["choices"][0]["message"]
     return ChatResponse(_message_from_wire(choice))
+
+
+def _record_usage(prompt_tokens, completion_tokens) -> None:
+    """Credits one model call (and its tokens) to the run that made it."""
+    try:
+        import run_context
+        ctx = run_context.get()
+        if ctx is not None:
+            ctx.add_usage(prompt_tokens or 0, completion_tokens or 0)
+    except Exception:
+        pass
 
 def _api_embed(input, role) -> dict:  # noqa: A002
     if isinstance(input, str):

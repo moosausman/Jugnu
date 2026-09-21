@@ -397,7 +397,7 @@ class SessionTests(unittest.TestCase):
                       lambda r: [("file_write", {"path": "~/Documents/note.md", "content": "hi"})])
         self.llm.when(lambda r: r["tools"] and after_tool(r), lambda r: "Wrote ~/Documents/note.md")
         conversation = [{"role": "system", "content": "s"}]
-        answer = session.run_turn(conversation, "write a note saying hi")
+        answer = session.run_turn(conversation, "write hi to a new note file, then confirm")
         self.assertEqual(answer, "Wrote ~/Documents/note.md")
         self.assertEqual(written, {"~/Documents/note.md": "hi"})
         run = tasks_store.get(self.ctx.run_id)
@@ -408,7 +408,7 @@ class SessionTests(unittest.TestCase):
     def test_question_then_answer_resumes_same_run(self):
         self.llm.when(is_planner, lambda r: {"clarify": "Which professor should I email?", "objective": "email"})
         conversation = [{"role": "system", "content": "s"}]
-        q = session.run_turn(conversation, "email my professor about the extension")
+        q = session.run_turn(conversation, "email my professor about the extension and then add a reminder")
         self.assertIn("Which professor", q)
         waiting = tasks_store.pending_question()
         self.assertIsNotNone(waiting)

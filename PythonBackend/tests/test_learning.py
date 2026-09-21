@@ -137,8 +137,17 @@ class ReflectionTests(unittest.TestCase):
                             objective="battery", complexity="simple")
         plan.tasks[0].status, plan.tasks[0].attempts = "done", 1
         self.assertFalse(learning._worth_reflecting(plan, "80%"))
+        # A simple request isn't reflected on even after a retry: its errors
+        # are already recorded by the per-call hooks, without a model call.
         plan.tasks[0].attempts = 2
-        self.assertTrue(learning._worth_reflecting(plan, "80%"))
+        self.assertFalse(learning._worth_reflecting(plan, "80%"))
+        # Multi-step work that hit trouble is.
+        two = planner.Plan("prep", [planner.Task(1, "files", "a"), planner.Task(2, "writer", "b", depends_on=[1])],
+                           objective="prep", complexity="standard")
+        for t in two.tasks:
+            t.status, t.attempts = "done", 1
+        two.tasks[1].status = "failed"
+        self.assertTrue(learning._worth_reflecting(two, "partly"))
 
 
 class CorrectionTests(unittest.TestCase):

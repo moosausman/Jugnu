@@ -169,6 +169,18 @@ struct RunActivity: Identifiable, Equatable {
     var state: String = "running"      // running | paused | cancelling | done | failed | cancelled
     var origin: String = "user"
     var session: String = ""
+    /// What the run cost, reported when it finishes: model calls and tokens (prompt + completion).
+    var modelCalls: Int?
+    var tokens: Int?
+
+    var costLabel: String? {
+        guard let modelCalls else { return nil }
+        if modelCalls == 0 { return "No model calls" }
+        let calls = "\(modelCalls) model call\(modelCalls == 1 ? "" : "s")"
+        guard let tokens, tokens > 0 else { return calls }
+        let size = tokens >= 1000 ? String(format: "%.1fk", Double(tokens) / 1000) : "\(tokens)"
+        return "\(calls) · \(size) tokens"
+    }
     let started = Date()
     var finished: Date?
 

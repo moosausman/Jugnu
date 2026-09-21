@@ -53,6 +53,12 @@ def close_app(app_name: str) -> str:
     return f"Could not close: {app_name} ({result.get('error', 'unknown error')})"
 
 
+# Music always plays in the user's own login: audio from the Jugnu account's
+# background session doesn't reach their speakers, and MacBridge there has
+# no permission to control Spotify -- every "play" routed to it failed.
+_MUSIC_SESSION = "primary"
+
+
 def _play_resolved(kind: str, name: str, artist: str, resolve) -> dict:
     """Resolve a name to a Spotify URI, play it in the background, verify,
     and remember the match so the same request is instant next time."""
@@ -68,7 +74,7 @@ def _play_resolved(kind: str, name: str, artist: str, resolve) -> dict:
         return {"ok": False, "error": f"Couldn't search Spotify: {e}"}
 
     # Cold-starting Spotify (launched hidden) can take ~20s before it plays.
-    result = call("/spotify/play-uri", {"uri": item["uri"]}, timeout=75)
+    result = call("/spotify/play-uri", {"uri": item["uri"]}, timeout=75, session=_MUSIC_SESSION)
     if result.get("ok"):
         remember_uri(kind, name, artist, item)
         result["requested"] = {kind: name, "artist": artist} if artist else {kind: name}
@@ -163,7 +169,7 @@ def spotify_play_uri(uri: str) -> dict:
         uri: A Spotify URI or open.spotify.com link. "spotify:search:..." is
             NOT playable -- use play_song / spotify_search for names.
     """
-    return call("/spotify/play-uri", {"uri": uri}, timeout=75)
+    return call("/spotify/play-uri", {"uri": uri}, timeout=75, session=_MUSIC_SESSION)
 
 
 def spotify_now_playing() -> dict:
@@ -172,7 +178,7 @@ def spotify_now_playing() -> dict:
     Read-only. Returns the track, artist, URI and player state, or says
     that nothing is loaded.
     """
-    return call("/spotify/state", timeout=20)
+    return call("/spotify/state", timeout=20, session=_MUSIC_SESSION)
 
 
 def spotify_control(action: str = "", volume: int = -1) -> dict:
@@ -194,7 +200,7 @@ def spotify_control(action: str = "", volume: int = -1) -> dict:
         args["volume"] = volume
     if not args:
         return {"ok": False, "error": "Give an action, a volume, or both."}
-    return call("/spotify/control", args, timeout=25)
+    return call("/spotify/control", args, timeout=25, session=_MUSIC_SESSION)
 
 
 def current_session() -> dict:
@@ -2031,6 +2037,24 @@ def whatsapp_send(header_element_id: str, editor_element_id: str,
                 "expectedSendLabel": expected_send_label})
 
 
+def whatsapp_message(to: str, text: str) -> dict:
+    """Sends a WhatsApp message to a person or group by name, in ONE call:
+    opens their chat, verifies the header really is that person, types the
+    message and presses Send. This is the tool for "message / text / tell
+    <name> ... on WhatsApp". Don't open, search, read or draft first. The
+    user approves the exact recipient and text before it runs.
+
+    If several chats match the name, or none do, nothing is sent and the
+    matching names come back as "candidates" -- ask the user which one.
+    Never retry after an error that happened at or after pressing Send.
+
+    Args:
+        to: The contact or group name as it appears in WhatsApp, e.g. "Buddy Boy".
+        text: The exact message to send.
+    """
+    return call("/whatsapp/message", {"name": to, "text": text}, timeout=90)
+
+
 def automation_sequence(steps: List[Dict[str, Any]], client_timeout: float = 180.0) -> dict:
     """Run up to 20 bridge UI calls without interleaving other bridge UI requests.
     Stops at the first error; earlier actions are not rolled back. Observe after
@@ -2621,6 +2645,7 @@ _tool_functions = [
     whatsapp_search,
     whatsapp_draft,
     whatsapp_send,
+    whatsapp_message,
     automation_sequence,
 
     # Location / weather / reference lookups (extra_tools.py)

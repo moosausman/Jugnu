@@ -50,7 +50,44 @@ class AgentResult:
 # every tool call takes.
 
 
-CONSECUTIVE_FAILURE_NUDGE_THRESHOLD = 3
+# Three failed tool calls in a row means the approach isn't working. The
+# loop used to nudge the model to "try a genuinely different strategy",
+# which reliably produced several more expensive attempts at things that
+# couldn't work (ten tries at a Spotify permission macOS had denied).
+# Now it stops and reports.
+MAX_CONSECUTIVE_FAILURES = 3
+
+# Errors no amount of retrying can fix inside this task: a macOS grant is
+# missing, a capability is switched off in Jugnu, or the user said no.
+_HARD_STOPS = {tool_runtime.ErrorType.OS_PERMISSION, tool_runtime.ErrorType.POLICY_DENIED,
+               tool_runtime.ErrorType.USER_DENIED}
+
+
+def _permission_hint(error: str) -> str:
+    """Where to fix a macOS permission error, as specifically as the error allows."""
+    import re
+    from tools import macbridge
+    where = " in the Jugnu account" if macbridge.active_session() == "agent" else ""
+    app = re.search(r"Apple events to ([^.]+)", error or "")
+    if app:
+        return (f"Allow it in System Settings → Privacy & Security → Automation{where}: "
+                f"turn on {app.group(1).strip()} under MacBridge.")
+    lowered = (error or "").lower()
+    for key, pane in (("accessibility", "Accessibility"), ("screen", "Screen & System Audio Recording"),
+                      ("contacts", "Contacts"), ("calendar", "Calendars"), ("reminders", "Reminders"),
+                      ("full disk", "Full Disk Access")):
+        if key in lowered:
+            return f"Allow it in System Settings → Privacy & Security → {pane}{where} (for MacBridge)."
+    return f"Grant the missing permission in System Settings → Privacy & Security{where}."
+
+
+def _stop_message(outcome) -> str:
+    error = (outcome.error or "").strip().rstrip(".")
+    if outcome.error_type == tool_runtime.ErrorType.OS_PERMISSION:
+        return f"I couldn't do that because macOS blocked it ({error}). {_permission_hint(error)}"
+    if outcome.error_type == tool_runtime.ErrorType.POLICY_DENIED:
+        return f"I didn't do that: {error}."
+    return "Okay, I didn't go ahead with that."
 
 
 def run_tool_loop(
@@ -206,42 +243,16 @@ def run_tool_loop(
                                exhausted=False, last_failed=False, outcomes=outcomes,
                                needs_input=question)
 
-        # Nudge AFTER every tool result for this message has been appended,
-        # never between them. Two bugs lived in the old in-loop version:
-        #
-        #  1. Wire-format corruption. When the model requests several tool
-        #     calls in one message and the threshold tripped after the
-        #     first, a {"role": "user"} message landed *between* two tool
-        #     results -- producing assistant(tool_calls=[a,b]) -> tool(a)
-        #     -> user(...) -> tool(b). Every OpenAI-compatible endpoint
-        #     (which is what JUGNU_PROVIDER=api talks to, including the
-        #     Gemini compat layer BackendBridge defaults to) requires each
-        #     tool_call_id to be answered before any non-tool message, and
-        #     rejects that sequence with a 400. Ollama tolerated it, so it
-        #     only ever showed up in API mode.
-        #
-        #  2. Repeat spam. consecutive_failures was never cleared after
-        #     nudging, so once it reached the threshold the same paragraph
-        #     was appended again on failure 4, 5, 6... Resetting here means
-        #     one nudge per streak, and the next one needs a fresh run of
-        #     CONSECUTIVE_FAILURE_NUDGE_THRESHOLD failures to earn it.
-        if consecutive_failures >= CONSECUTIVE_FAILURE_NUDGE_THRESHOLD:
-            # last_call_sig only catches an *exact* repeat -- three
-            # different half-working variations of the same idea (a real
-            # pattern this agent has hit: several differently-worded
-            # shell_stage attempts, then several differently-shaped
-            # keyboard_sequence attempts, none identical to the last, none
-            # of them stepping back) sail right past it. This catches that
-            # instead, on the failure itself rather than on the arguments
-            # matching.
-            messages.append({
-                "role": "user",
-                "content": (
-                    f"({consecutive_failures} tool calls in a row have now failed, "
-                    "including different variations of the same approach. Don't "
-                    "try another small variation of the same idea -- switch to a "
-                    "genuinely different tool or strategy, or stop and explain to "
-                    "the user what's blocking you instead of continuing to retry.)"
-                ),
-            })
-            consecutive_failures = 0
+        # Stop, rather than spend more calls, when nothing further in this
+        # task can succeed. Checked only after every tool call in the
+        # message has its result (the wire format requires that).
+        stop = next((o for o in outcomes[-len(message.tool_calls):] if o.error_type in _HARD_STOPS), None)
+        if stop is not None:
+            return AgentResult(content=_stop_message(stop), messages=messages, steps=steps,
+                               exhausted=False, last_failed=True, outcomes=outcomes)
+        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            last = next((o for o in reversed(outcomes) if not o.ok), None)
+            detail = f"{last.tool}: {last.error}" if last is not None and last.error else "the last attempts failed"
+            return AgentResult(content=f"I couldn't get this done -- {detail}", messages=messages, steps=steps,
+                               exhausted=False, last_failed=True, outcomes=outcomes)
+

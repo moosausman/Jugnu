@@ -70,7 +70,7 @@ TRUSTED_OUTPUT_TOOLS = {
     "schedule_task", "set_timer", "list_scheduled_tasks", "cancel_scheduled_task",
     "window_focus", "window_arrange", "window_set_frame", "window_minimize", "window_close",
     "speak", "permissions_check", "calendar_calendars", "git_commit", "document_create",
-    "notes_create", "notes_append", "music_control",
+    "notes_create", "notes_append", "music_control", "whatsapp_message",
 }
 
 

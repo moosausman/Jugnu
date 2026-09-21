@@ -151,12 +151,18 @@ def _log(message: str) -> None:
 
 
 def _worth_reflecting(plan, answer: str) -> bool:
+    """Reflection is a model call after the run. Worth it for multi-step
+    work (that's where reusable skills and strategies come from); a simple
+    request's failures are already recorded as error memories by the
+    per-call hooks, for free."""
     tasks = getattr(plan, "tasks", [])
+    if getattr(plan, "complexity", "simple") == "simple" or len(tasks) < 2:
+        return False
     if len(tasks) >= _MIN_TASKS_FOR_REFLECTION:
         return True
     if any(t.status != "done" or t.attempts > 1 for t in tasks):
         return True  # something went wrong -- worth learning from
-    return getattr(plan, "complexity", "simple") != "simple"
+    return getattr(plan, "complexity", "simple") == "complex"
 
 
 def reflect_later(run_id: str, plan, answer: str) -> None:
