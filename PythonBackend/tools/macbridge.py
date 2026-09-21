@@ -1,3 +1,4 @@
+import contextvars
 import os
 import time
 
@@ -34,33 +35,35 @@ SESSIONS = {
 # everything behaves exactly as it did before.
 DEFAULT_SESSION = os.environ.get("JUGNU_DEFAULT_SESSION", "primary")
 
-_active_session = DEFAULT_SESSION
+# Per context, not per process: a background workflow working in the Jugnu
+# account and a foreground request on the user's own desktop can run at the
+# same time, and each must keep hitting its own MacBridge. Threads started
+# by the executor copy their parent's context, so tasks inherit the run's
+# session.
+_active: contextvars.ContextVar = contextvars.ContextVar("jugnu_macbridge_session", default=None)
 
 
 def active_session() -> str:
-    return _active_session
+    return _active.get() or DEFAULT_SESSION
 
 
 def set_active_session(name: str) -> str:
-    """Point subsequent calls at a different session. Returns the name set."""
-    global _active_session
+    """Point subsequent calls (in this run/task) at a different session."""
     if name not in SESSIONS:
         raise ValueError(f"unknown session {name!r}; expected one of {sorted(SESSIONS)}")
-    _active_session = name
+    _active.set(name)
     return name
 
 
 def reset_session() -> str:
-    """Back to DEFAULT_SESSION. Called at the start of every turn, so a
-    one-off "do this on my account" doesn't silently stick for every
-    request after it."""
-    global _active_session
-    _active_session = DEFAULT_SESSION
-    return _active_session
+    """Back to DEFAULT_SESSION. Called at the start of every run, so a
+    one-off "do this on my account" doesn't stick for later requests."""
+    _active.set(DEFAULT_SESSION)
+    return DEFAULT_SESSION
 
 
 def session_url(name: str | None = None) -> str:
-    return SESSIONS[name or _active_session]
+    return SESSIONS[name or active_session()]
 
 
 def session_available(name: str) -> bool:
@@ -175,7 +178,7 @@ def call(
     except requests.exceptions.Timeout as e:
         raise MacBridgeTimeout(
             f"{endpoint} did not respond within {timeout}s in the "
-            f"{session or _active_session!r} session ({session_url(session)}). "
+            f"{session or active_session()!r} session ({session_url(session)}). "
             f"This means Python stopped waiting, not that the action was "
             f"cancelled or failed on the Mac side -- see MacBridgeTimeout's "
             f"docstring. If this is the agent session, check that the account "

@@ -57,11 +57,35 @@ _KEYBOARD_TOOL_NAMES = [
 ]
 
 
+_MAX_TOOLS_PER_AGENT = 128
+_OPERATOR_EXCLUDED = {
+    n for n in FUNCTIONS if n.startswith(("notion_", "whatsapp_")) or n in {
+        "create_temp_email", "check_temp_email", "read_temp_email_message",
+        "file_group", "file_hash", "file_verify_checksum", "file_empty_files", "file_empty_directories",
+        "file_broken_symlinks", "file_lock", "file_unlock", "file_chmod", "file_permissions",
+        "file_list_trash", "file_restore_from_trash", "file_batch_copy", "file_batch_rename",
+        "file_duplicate", "file_count_lines", "file_touch", "spotify_search", "spotify_play_uri",
+        "mouse_position", "screen_displays", "keyboard_check_accessibility", "automation_permissions",
+        "shell_stage_script", "shell_read_front_window", "nominatim_geocode", "nominatim_reverse_geocode",
+        "wikipedia_search", "wikipedia_summary", "ui_find",
+    }
+}
+
+
 class Agent:
-    def __init__(self, name, role, tool_names, autonomous_safe=False):
+    def __init__(self, name, role, tool_names, autonomous_safe=False, exclusive=False,
+                 default_tier="standard"):
         self.name = name
         self.role = role
         self.tool_names = list(tool_names)
+        # Drives the shared screen (keyboard, mouse, frontmost app). Two such
+        # tasks must never run at the same time -- they'd fight over focus --
+        # so the executor runs exclusive tasks one at a time, while
+        # everything else in a plan can run in parallel.
+        self.exclusive = exclusive
+        # Which model tier this agent's tasks use unless the plan says
+        # otherwise: fast | standard | deep.
+        self.default_tier = default_tier
         # Whether Jugnu may run this agent's tasks entirely on its own
         # initiative (see proactive.py) with no confirmation, versus
         # proposing the action and waiting for the user to say go ahead.
@@ -97,21 +121,24 @@ class Agent:
 AGENTS = {
     "research": Agent(
         name="research",
-        role="Searches the web and reasons over sources. Time-sensitive facts, "
-             "news, prices, schedules.",
-        tool_names=["search_web"],
+        role="Searches the web and reasons over sources, and reads documents and open web pages. "
+             "Time-sensitive facts, news, prices, schedules; research syntheses with cited sources.",
+        tool_names=[
+            "document_read", "safari_read_page","search_web"],
         autonomous_safe=True,  # search_web is read-only -- nothing to undo
     ),
     "calendar": Agent(
         name="calendar",
-        role="Manages calendar events and reminders.",
+        role="Manages calendar events, reminders, timers, and tasks scheduled for later or on repeat.",
         # Fixed: was "reminder_create" (no such tool -- tools.py defines
         # reminders_create). Also added calendar_delete so the agent can
         # actually cancel/undo what it creates, and reminders_complete so
         # it can check things off instead of only ever creating them.
         tool_names=[
+            "calendar_calendars", "daily_briefing",
             "calendar_list", "calendar_create", "calendar_delete",
             "reminders_list", "reminders_create", "reminders_complete",
+            "set_timer", "schedule_task", "list_scheduled_tasks", "cancel_scheduled_task",
         ],
     ),
     "contacts": Agent(
@@ -122,7 +149,8 @@ AGENTS = {
     ),
     "files": Agent(
         name="files",
-        role="Reads, writes, moves, and organizes files and folders on the Mac.",
+        role="Reads, writes, moves, renames, organizes and searches files and folders on the Mac, "
+             "and moves things to the Trash (recoverable). Use for anything about the user's files.",
         # Fixed: tools.py defines ~30 file_* tools; this agent previously
         # only saw 11 of them, so the planner could route a "files" task
         # here and the agent would genuinely lack the tool for it (e.g.
@@ -136,6 +164,7 @@ AGENTS = {
         # agent had no way to reach. _validate_registry() below is what
         # caught it this time instead of another manual diff.
         tool_names=[
+            "document_read", "document_create", "search_documents", "ocr_image",
             "file_read", "file_write", "file_append", "file_touch",
             "file_mkdir", "file_move", "file_copy", "file_duplicate",
             "file_delete", "file_exists", "file_info", "file_list",
@@ -153,21 +182,21 @@ AGENTS = {
     ),
     "system": Agent(
         name="system",
-        role="Opens/closes apps, plays music, sends notifications, manages the "
-             "clipboard, and reveals files in Finder.",
+        exclusive=True,
+        role="Opens/closes apps, plays music, controls volume/sleep/lock/battery, sends "
+             "notifications, manages the clipboard, reveals files in Finder, runs AppleScript "
+             "and named Shortcuts.",
         # Fixed: was "notification" (no such tool -- tools.py defines
         # notifications_send). Also added clipboard_get/set and
         # finder_open/reveal, which existed in tools.py but weren't
         # reachable by any agent.
         #
-        # Deliberately NOT included: applescript_run. Every other tool
-        # here does one specific, bounded thing; applescript_run lets the
-        # model execute arbitrary AppleScript autonomously, which is a
-        # meaningfully bigger blast radius (it can do anything any of the
-        # other tools do, and things none of them do, with no per-action
-        # review). Wire it in yourself if you want that tradeoff, but it
-        # shouldn't be a silent side effect of a tool-routing cleanup.
+        # applescript_run is included now that every call is classified by
+        # content (policy.classify_applescript) and gated: read-only scripts
+        # run, anything that sends, deletes or touches security settings
+        # waits for the user's approval.
         tool_names=[
+            "window_list", "window_focus", "window_arrange", "window_set_frame", "window_minimize", "window_close", "speak", "music_control", "system_info", "permissions_check",
             "open_app", "close_app", "notifications_send",
             "current_session", "set_target_session",
             "play_song", "spotify_search", "spotify_play_uri",
@@ -176,6 +205,8 @@ AGENTS = {
             "shortcuts_run",
             "system_get_volume", "system_set_volume", "system_battery",
             "system_sleep", "system_lock",
+            "applescript_run",
+            "set_timer", "schedule_task", "list_scheduled_tasks", "cancel_scheduled_task",
         ],
     ),
     "mail": Agent(
@@ -187,22 +218,28 @@ AGENTS = {
     ),
     "browser": Agent(
         name="browser",
+        exclusive=True,
         role="Opens URLs and reads open tabs in Safari.",
         # New -- same gap as mail, for safari_*.
         # Not autonomous-safe: safari_open pops a new tab into whatever
         # the user's already looking at, unprompted -- not destructive,
         # but surprising enough to check first.
-        tool_names=["safari_open", "safari_tabs", "safari_current_tab"],
+        tool_names=[
+            "safari_read_page","safari_open", "safari_tabs", "safari_current_tab"],
     ),
     "memory": Agent(
         name="memory",
-        role="Records durable facts about the user for future recall, and can "
-             "report which task procedures Jugnu has taught itself.",
-        tool_names=["save_fact", "list_learned_skills"],
+        role="Jugnu's own long-term memory: saves facts and preferences the user states "
+             "(\"remember that...\"), recalls what it knows, forgets things on request, and "
+             "reports which procedures it has learned.",
+        tool_names=["save_fact", "remember", "recall_memory", "forget_memory", "list_learned_skills"],
         # Already the established "just do it, don't ask" tool everywhere
         # else (see TOOL_RULES in memory.py) -- this just makes that
         # explicit for the autonomous-action path too.
-        autonomous_safe=True,
+        # Not autonomous-safe any more: it can delete memories
+        # (forget_memory). Unprompted memory writes are gated by the tool
+        # runtime regardless -- unattended work asks before anything but reads.
+        autonomous_safe=False,
     ),
     "notion": Agent(
         name="notion",
@@ -224,12 +261,13 @@ AGENTS = {
     "lookup": Agent(
         name="lookup",
         role="Looks up weather forecasts, place coordinates/addresses, and "
-             "Wikipedia facts -- for direct data-API lookups, as opposed to "
-             "'research' which searches the open web for anything else.",
+             "Wikipedia facts, and assembles the daily briefing -- for direct data-API "
+             "lookups, as opposed to 'research' which searches the open web.",
         # New -- extra_tools.py's geocoding/weather/wikipedia functions
         # existed with proper docstrings but no agent referenced them.
         autonomous_safe=True,  # every tool here is a read-only data lookup
         tool_names=[
+            "daily_briefing",
             "geocode_location", "get_weather",
             "wikipedia_search", "wikipedia_summary",
             "nominatim_geocode", "nominatim_reverse_geocode",
@@ -247,6 +285,7 @@ AGENTS = {
     ),
     "automation": Agent(
         name="automation",
+        exclusive=True,
         role="Runs terminal commands or script files, reads back Terminal output, "
              "and controls the Mac's mouse, keyboard and on-screen app/browser "
              "interfaces. Inspects accessibility controls, captures screenshots, "
@@ -263,13 +302,17 @@ AGENTS = {
         # agent that can start a background job had no way to ever check on it.
         autonomous_safe=False,
         tool_names=[
+            "window_list", "window_focus", "window_arrange", "window_set_frame", "window_minimize", "window_close",
+            "ocr_screen", "ocr_image",
             "shell_run", "shell_run_script",
             "shell_stage", "shell_stage_script", "shell_read_front_window",
             "shell_spawn", "shell_job_status", "shell_job_kill", "shell_jobs",
+            "applescript_run",
         ] + _KEYBOARD_TOOL_NAMES + _DESKTOP_TOOL_NAMES,
     ),
     "whatsapp": Agent(
         name="whatsapp",
+        exclusive=True,
         role="Opens WhatsApp chats, resolves contacts, reads the exposed chat "
              "interface, searches chats, and drafts or sends messages requested "
              "by the user. Prefers the native Mac app; can interact with WhatsApp "
@@ -283,6 +326,53 @@ AGENTS = {
             "contacts_search", "contacts_list",
             "safari_open", "safari_tabs", "safari_current_tab",
         ] + _KEYBOARD_TOOL_NAMES + _DESKTOP_TOOL_NAMES,
+    ),
+    "notes": Agent(
+        name="notes",
+        role="Apple Notes: searches, reads, creates and appends to the user's notes.",
+        tool_names=["notes_search", "notes_read", "notes_create", "notes_append"],
+    ),
+    "writer": Agent(
+        name="writer",
+        role="Produces substantial written work -- notes, summaries, study guides, practice "
+             "problems with solutions, plans, reports, drafts of emails/messages -- and saves "
+             "it to files. Use for any task whose output is a document or long-form text.",
+        tool_names=[
+            "document_create", "document_read", "search_documents", "notes_create", "notes_append",
+            "file_write", "file_append", "file_read", "file_mkdir", "file_exists", "file_list",
+            "file_preview", "remember", "recall_memory",
+        ],
+        default_tier="deep",
+    ),
+    "developer": Agent(
+        name="developer",
+        role="Software engineering on the user's projects: reads and searches code, edits "
+             "files, runs builds/tests/linters, uses git (status, diff, commit), diagnoses and "
+             "fixes bugs, and verifies fixes by re-running tests.",
+        tool_names=[
+            "git_status", "git_diff", "git_log", "git_commit", "code_search", "run_tests", "document_read",
+            "shell_run", "shell_run_script", "shell_spawn", "shell_job_status", "shell_job_kill",
+            "shell_jobs", "file_read", "file_write", "file_append", "file_find_replace",
+            "file_search", "file_fuzzy_search", "file_tree", "file_list", "file_exists",
+            "file_info", "file_head", "file_tail", "file_read_range", "file_diff", "file_mkdir",
+            "file_copy", "file_move", "file_trash", "file_count_lines", "search_web",
+        ],
+        default_tier="deep",
+    ),
+    "operator": Agent(
+        name="operator",
+        role="The generalist, with EVERY tool: files, shell, apps, browser, keyboard/mouse/"
+             "screen, mail, calendar, reminders, messaging, web research, Notion, memory. Use "
+             "for a task that genuinely spans several of the domains above in one step, or "
+             "that no specialist covers. Prefer a specialist when one fits.",
+        # Broad on purpose, but capped: providers limit how many tool schemas
+        # one request may carry (OpenAI: 128), and each schema costs context
+        # on every call. Specialist-only tools (Notion, WhatsApp internals,
+        # rare file maintenance) stay with their specialists. Holding a tool
+        # is never permission to use it unchecked -- tool_runtime's policy
+        # gate applies to every call regardless of agent.
+        tool_names=[n for n in FUNCTIONS if n not in _OPERATOR_EXCLUDED][:_MAX_TOOLS_PER_AGENT],
+        exclusive=True,
     ),
 }
 
@@ -300,8 +390,11 @@ for _name in ("calendar", "files", "mail", "browser"):
 # that's cheap and side-effect-free, unlike letting every agent touch the
 # calendar or the file system.
 for _agent in AGENTS.values():
-    if "save_fact" not in _agent.tool_names:
-        _agent.tool_names.append("save_fact")
+    # ask_user lets any agent stop and put a question to the user when
+    # something essential is missing (agent_core pauses the plan on it).
+    for _tool in ("save_fact", "recall_memory", "ask_user"):
+        if _tool not in _agent.tool_names:
+            _agent.tool_names.append(_tool)
 
 
 # ---------------------------------------------------------------------------
@@ -319,20 +412,10 @@ for _agent in AGENTS.values():
 # by any agent's tool loop. Anything landing here needs a *reason*, spelled
 # out, the same way the comments above explain every fix -- this dict is the
 # only thing that stops the check below from failing on them.
-_INTENTIONALLY_UNASSIGNED = {
-    "applescript_run": (
-        "Runs arbitrary AppleScript with no per-action review -- a strictly "
-        "bigger blast radius than every other tool combined (see the "
-        "'system' agent's comment above). Wire it into an agent on purpose; "
-        "it should never be a silent side effect of a routing change."
-    ),
-    "ask_user": (
-        "Blocks the process on a synchronous input() call. The intended "
-        "escalation path is an agent reporting what's missing (see "
-        "AGENT_DISCIPLINE in memory.py) and the planner/persona layer "
-        "deciding whether to ask -- not a sub-agent blocking mid-task on "
-        "stdin. Give it to an agent deliberately if that design changes."
-    ),
+_INTENTIONALLY_UNASSIGNED: dict = {
+    # Empty: the "operator" agent holds every tool, and every call is gated
+    # by tool_runtime's policy regardless of which agent makes it. Add an
+    # entry (with a reason) only if a tool must be kept from all agents.
 }
 
 # The ONLY tools an autonomous_safe=True agent may hold. This is the Agent
@@ -341,9 +424,9 @@ _INTENTIONALLY_UNASSIGNED = {
 # tool is exactly the mistake that flag exists to prevent, so it's enforced
 # here rather than trusted to code review.
 _AUTONOMOUS_SAFE_TOOLS = frozenset({
-    "search_web",
+    "search_web", "ask_user", "daily_briefing", "document_read", "safari_read_page",
     "contacts_search", "contacts_list",
-    "save_fact", "list_learned_skills",
+    "save_fact", "list_learned_skills", "remember", "recall_memory",
     "geocode_location", "get_weather",
     "wikipedia_search", "wikipedia_summary",
     "nominatim_geocode", "nominatim_reverse_geocode",
@@ -373,6 +456,11 @@ def _validate_registry() -> None:
                     f"for this agent, or that tool needs to be added to the "
                     f"whitelist (only if it's genuinely read-only/no-undo)."
                 )
+
+    for agent in AGENTS.values():
+        if len(agent.tool_names) > _MAX_TOOLS_PER_AGENT:
+            problems.append(f"agent '{agent.name}' has {len(agent.tool_names)} tools; providers accept at most "
+                            f"{_MAX_TOOLS_PER_AGENT} per request")
 
     orphaned = set(FUNCTIONS) - all_claimed - set(_INTENTIONALLY_UNASSIGNED)
     if orphaned:

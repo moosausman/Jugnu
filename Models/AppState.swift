@@ -42,6 +42,44 @@ final class AppState: ObservableObject {
     /// chat transcript and has nothing else to show success or failure.
     @Published var settingsFeedback: String?
 
+    // MARK: Agent activity
+    // Everything the backend reports about work in progress: the plan and
+    // its tasks, each tool call, approvals waiting on the user. Kept
+    // separate from `messages` so the conversation stays a conversation --
+    // the activity drawer shows this detail only when asked.
+
+    /// Most recent first; capped so a long session doesn't grow unbounded.
+    @Published var runs: [RunActivity] = []
+    @Published var approvals: [ApprovalRequest] = []
+    /// The latest one-line progress update for the active run, shown under
+    /// the answer while Jugnu works on something long.
+    @Published var progressLine: String?
+    @Published var securityNotice: String?
+    @Published var permissions: JSONValue = .null
+    @Published var auditEvents: [JSONValue] = []
+    @Published var noticeMessage: String?
+
+    // Management data for the activity panel's tabs, refreshed on demand.
+    @Published var memories: [JSONValue] = []
+    @Published var memoryCounts: JSONValue = .null
+    @Published var skillLibrary: [JSONValue] = []
+    @Published var runHistory: [JSONValue] = []
+    @Published var schedules: [JSONValue] = []
+    @Published var osPermissions: JSONValue = .null
+    @Published var toolStats: [JSONValue] = []
+    @Published var proposals: [JSONValue] = []
+    @Published var interruptedRuns: [JSONValue] = []
+    @Published var suggestedSkillName: String?
+
+    var activeRun: RunActivity? { runs.first(where: { $0.isActive && $0.origin == "user" }) }
+    var backgroundRuns: [RunActivity] { runs.filter { $0.isActive && $0.origin != "user" } }
+    /// Something in the activity panel wants attention: an approval, a
+    /// suggested skill, or an interrupted task.
+    var activityNeedsAttention: Bool {
+        !approvals.isEmpty || suggestedSkillName != nil || !interruptedRuns.isEmpty
+    }
+    private static let maxRuns = 30
+
     private var bridge: BackendBridge?
 
     /// Remembered from launch() so restartBackend() can relaunch bridge.py
@@ -146,6 +184,281 @@ final class AppState: ObservableObject {
         bridge?.send(OutgoingRequest(type: "send", id: id, text: trimmed))
     }
 
+    // MARK: - Run control
+
+    func respond(to approval: ApprovalRequest, decision: String, note: String = "") {
+        approvals.removeAll { $0.id == approval.id }
+        bridge?.send(OutgoingRequest(type: "approval_response", id: nil, text: nil, extra: [
+            "approval_id": .string(approval.id),
+            "decision": .string(decision),
+            "note": .string(note),
+        ]))
+    }
+
+    /// Stops the run in progress (or a specific background run). The
+    /// backend stops at its next checkpoint -- between tool calls, or
+    /// immediately if it's waiting on an approval.
+    func cancelRun(_ runId: String? = nil) {
+        guard let target = runId ?? activeRun?.id else { return }
+        updateRun(target) { $0.state = "cancelling" }
+        bridge?.send(OutgoingRequest(type: "cancel", id: nil, text: nil, extra: ["run_id": .string(target)]))
+    }
+
+    func resumeInterrupted(_ runId: String) {
+        interruptedRuns.removeAll { $0["run_id"]?.string == runId }
+        sendRequest("run_resume", ["run_id": .string(runId)])
+    }
+
+    func dismissInterrupted(_ runId: String) {
+        interruptedRuns.removeAll { $0["run_id"]?.string == runId }
+    }
+
+    func pauseRun(_ runId: String) {
+        bridge?.send(OutgoingRequest(type: "pause", id: nil, text: nil, extra: ["run_id": .string(runId)]))
+    }
+
+    func resumeRun(_ runId: String) {
+        bridge?.send(OutgoingRequest(type: "resume", id: nil, text: nil, extra: ["run_id": .string(runId)]))
+    }
+
+    // MARK: - Management requests
+
+    func refreshPermissions() {
+        bridge?.send(OutgoingRequest(type: "get_permissions", id: nil, text: nil))
+    }
+
+    func updatePermissions(_ patch: [String: JSONValue]) {
+        bridge?.send(OutgoingRequest(type: "set_permissions", id: nil, text: nil,
+                                     extra: ["patch": .object(patch)]))
+    }
+
+    func refreshAudit(limit: Int = 200) {
+        bridge?.send(OutgoingRequest(type: "get_audit", id: nil, text: nil, extra: ["limit": .number(Double(limit))]))
+    }
+
+    /// Generic management request for the memory/skills/task views.
+    func sendRequest(_ type: String, _ extra: [String: JSONValue] = [:]) {
+        bridge?.send(OutgoingRequest(type: type, id: nil, text: nil, extra: extra))
+    }
+
+    private func updateRun(_ runId: String, _ change: (inout RunActivity) -> Void) {
+        guard let index = runs.firstIndex(where: { $0.id == runId }) else { return }
+        change(&runs[index])
+    }
+
+    private func ensureRun(_ runId: String, requestId: String, goal: String, origin: String = "user") {
+        guard !runId.isEmpty, !runs.contains(where: { $0.id == runId }) else { return }
+        runs.insert(RunActivity(id: runId, requestId: requestId, goal: goal, origin: origin), at: 0)
+        if runs.count > Self.maxRuns { runs.removeLast(runs.count - Self.maxRuns) }
+    }
+
+    private func finishRun(_ runId: String, state: String) {
+        updateRun(runId) { run in
+            run.state = state
+            run.finished = Date()
+            for i in run.tasks.indices where !run.tasks[i].state.isFinished {
+                run.tasks[i].state = state == "cancelled" ? .cancelled : (state == "failed" ? .failed : run.tasks[i].state)
+            }
+        }
+        if activeRun == nil { progressLine = nil }
+        approvals.removeAll { $0.runId == runId }
+    }
+
+    /// Handles every activity-related event. Returns true if it consumed it.
+    private func handleActivity(_ event: IncomingEvent) -> Bool {
+        let p = event.payload
+        let runId = p["run_id"]?.string ?? ""
+        switch event.type {
+        case "run_started":
+            let origin = p["origin"]?.string ?? "user"
+            ensureRun(runId, requestId: event.id ?? "", goal: p["goal"]?.string ?? "", origin: origin)
+            if origin == "user" {
+                progressLine = nil
+                securityNotice = nil
+            }
+            interruptedRuns.removeAll { $0["run_id"]?.string == runId }
+            return true
+
+        case "plan":
+            ensureRun(runId, requestId: event.id ?? "", goal: p["goal"]?.string ?? "")
+            updateRun(runId) { run in
+                run.objective = p["objective"]?.string ?? p["goal"]?.string ?? run.goal
+                run.assumptions = (p["assumptions"]?.array ?? []).compactMap { $0.string }
+                run.tasks = (p["tasks"]?.array ?? []).map { PlanTask(json: $0) }
+                run.session = p["session"]?.string ?? ""
+            }
+            return true
+
+        case "task_status", "task_update":
+            let taskId = p["task_id"]?.string ?? ""
+            let state = TaskState(rawValue: p["status"]?.string ?? "")
+            updateRun(runId) { run in
+                if let i = run.tasks.firstIndex(where: { $0.id == taskId }) {
+                    if let state { run.tasks[i].state = state }
+                    if let note = p["note"]?.string { run.tasks[i].note = note }
+                } else if let task = p["task"], task["id"] != nil {
+                    var t = PlanTask(json: task)
+                    if let state { t.state = state }
+                    run.tasks.append(t)
+                }
+            }
+            return true
+
+        case "replan":
+            updateRun(runId) { run in
+                for task in p["tasks"]?.array ?? [] where !run.tasks.contains(where: { $0.id == task["id"]?.string }) {
+                    run.tasks.append(PlanTask(json: task))
+                }
+                run.assumptions = (p["assumptions"]?.array ?? []).compactMap { $0.string }
+                if let reason = p["reason"]?.string, !reason.isEmpty { run.progress.append("Revised plan: \(reason)") }
+            }
+            return true
+
+        case "verification":
+            let taskId = p["task_id"]?.string ?? ""
+            updateRun(runId) { run in
+                if let i = run.tasks.firstIndex(where: { $0.id == taskId }), let reason = p["reason"]?.string {
+                    run.tasks[i].note = reason
+                }
+            }
+            return true
+
+        case "background_done":
+            let content = p["content"]?.string ?? ""
+            messages.append(ChatMessage(role: .assistant, content: content, origin: .background))
+            finishRun(runId, state: p["state"]?.string ?? "done")
+            notifyIfBackgrounded(title: "Background task", body: content)
+            return true
+
+        case "run_interrupted":
+            interruptedRuns.append(p)
+            return true
+
+        case "skill_suggested":
+            suggestedSkillName = p["skill"]?["name"]?.string
+            sendRequest("skills_list")
+            return true
+
+        case "memories":
+            memories = p["items"]?.array ?? []
+            memoryCounts = p["counts"] ?? .null
+            return true
+
+        case "skills":
+            skillLibrary = p["skills"]?.array ?? []
+            return true
+
+        case "runs":
+            runHistory = p["runs"]?.array ?? []
+            return true
+
+        case "schedules":
+            schedules = p["schedules"]?.array ?? []
+            return true
+
+        case "os_permissions":
+            osPermissions = p["sessions"] ?? .null
+            return true
+
+        case "tool_stats":
+            toolStats = p["tools"]?.array ?? []
+            return true
+
+        case "proposals":
+            proposals = p["proposals"]?.array ?? []
+            return true
+
+        case "tool_start":
+            let activity = ToolActivity(runId: runId, taskId: p["task_id"]?.string ?? "",
+                                        tool: p["tool"]?.string ?? "tool",
+                                        summary: p["summary"]?.string ?? "", risk: p["risk"]?.string ?? "")
+            updateRun(runId) { run in
+                run.tools.append(activity)
+                if run.tools.count > 200 { run.tools.removeFirst(run.tools.count - 200) }
+            }
+            return true
+
+        case "tool_end":
+            let tool = p["tool"]?.string ?? ""
+            updateRun(runId) { run in
+                if let i = run.tools.lastIndex(where: { $0.tool == tool && $0.ok == nil }) {
+                    run.tools[i].ok = p["ok"]?.bool
+                    run.tools[i].errorType = p["error_type"]?.string
+                    run.tools[i].preview = p["preview"]?.string ?? ""
+                    run.tools[i].duration = p["duration"]?.double
+                } else if p["ok"]?.bool == false {
+                    // Rejected before running (bad arguments, blocked, denied).
+                    var a = ToolActivity(runId: runId, taskId: p["task_id"]?.string ?? "", tool: tool,
+                                         summary: p["preview"]?.string ?? "", risk: "")
+                    a.ok = false
+                    a.errorType = p["error_type"]?.string
+                    run.tools.append(a)
+                }
+            }
+            return true
+
+        case "progress":
+            let line = p["message"]?.string ?? ""
+            updateRun(runId) { run in
+                run.progress.append(line)
+                if run.progress.count > 100 { run.progress.removeFirst(run.progress.count - 100) }
+            }
+            if runs.first(where: { $0.id == runId })?.origin ?? "user" == "user" { progressLine = line }
+            return true
+
+        case "approval_request":
+            if let approval = ApprovalRequest(json: p), !approvals.contains(where: { $0.id == approval.id }) {
+                approvals.append(approval)
+                if !NSApp.isActive {
+                    NotificationManager.shared.notify(title: "Jugnu needs your OK", body: approval.summary)
+                }
+            }
+            return true
+
+        case "approval_resolved":
+            let approvalId = p["approval_id"]?.string ?? ""
+            approvals.removeAll { $0.id == approvalId }
+            return true
+
+        case "approvals":
+            approvals = (p["approvals"]?.array ?? []).compactMap { ApprovalRequest(json: $0) }
+            return true
+
+        case "run_state":
+            let state = p["state"]?.string ?? "running"
+            updateRun(runId) { $0.state = state }
+            return true
+
+        case "run_finished":
+            finishRun(runId, state: p["state"]?.string ?? "done")
+            return true
+
+        case "security_warning":
+            securityNotice = p["message"]?.string
+            return true
+
+        case "permissions":
+            permissions = p["permissions"] ?? .null
+            if p["saved"]?.bool == true { showSettingsFeedback("Permissions saved.") }
+            return true
+
+        case "audit":
+            auditEvents = p["events"]?.array ?? []
+            return true
+
+        case "notice":
+            noticeMessage = p["message"]?.string
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                self.noticeMessage = nil
+            }
+            return true
+
+        default:
+            return false
+        }
+    }
+
     func clear() {
         messages.removeAll()
         errorMessage = nil
@@ -203,6 +516,7 @@ final class AppState: ObservableObject {
     }
 
     private func handle(_ event: IncomingEvent) {
+        if handleActivity(event) { return }
         switch event.type {
         case "ready":
             plannerModelName = event.plannerModel ?? ""
@@ -214,6 +528,8 @@ final class AppState: ObservableObject {
             activityTrackingEnabled = event.activityTracking ?? false
             dailyReviewScheduled = event.dailyReview ?? false
             statusLabel = "ready"
+            refreshPermissions()
+            sendRequest("get_approvals")
             if let history = event.history {
                 messages = history.map {
                     ChatMessage(role: ChatMessage.Role(rawValue: $0.role) ?? .assistant, content: $0.content)
@@ -232,6 +548,10 @@ final class AppState: ObservableObject {
             messages.append(ChatMessage(role: .assistant, content: content))
             thinking = false
             statusLabel = "ready"
+            if let runId = event.payload["run_id"]?.string {
+                finishRun(runId, state: event.payload["cancelled"]?.bool == true ? "cancelled" : "done")
+            }
+            progressLine = nil
             notifyIfBackgrounded(title: "Jugnu's done", body: content)
 
         case "nudge":
@@ -254,6 +574,8 @@ final class AppState: ObservableObject {
             notifyIfBackgrounded(title: "Daily digest ready", body: content)
 
         case "error":
+            if let runId = event.payload["run_id"]?.string { finishRun(runId, state: "failed") }
+            progressLine = nil
             errorMessage = event.message ?? "Something went wrong."
             awaitingDailyReview = false
             thinking = false

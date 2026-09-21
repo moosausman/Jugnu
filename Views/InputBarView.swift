@@ -4,6 +4,7 @@ struct InputBarView: View {
     @ObservedObject var appState: AppState
     @State private var text: String = ""
     @FocusState private var focused: Bool
+    @StateObject private var speech = SpeechInput()
 
     var body: some View {
         HStack(spacing: 9) {
@@ -19,9 +20,35 @@ struct InputBarView: View {
                 .disabled(appState.thinking)
                 .onSubmit(send)
 
+            if !appState.thinking {
+                // Push-to-talk: tap to dictate, tap again to stop. Words
+                // stream into the field so they can be edited before sending.
+                Button(action: { speech.toggle() }) {
+                    Image(systemName: speech.isListening ? "mic.fill" : "mic")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(speech.isListening ? Theme.danger : Theme.inkFaint)
+                }
+                .buttonStyle(.plain)
+                .help(speech.isListening ? "Stop dictation" : "Dictate (on-device when available)")
+                .transition(.opacity)
+            }
+
             if appState.thinking {
                 ThinkingDots()
                     .transition(.opacity)
+                // Stops the request in progress at its next checkpoint --
+                // between tool calls, or right away if it's waiting on you.
+                Button(action: { appState.cancelRun() }) {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Theme.ink)
+                        .padding(5)
+                        .background(Circle().fill(Color.white.opacity(0.1)))
+                }
+                .buttonStyle(.plain)
+                .help("Stop (⌘.)")
+                .keyboardShortcut(".", modifiers: .command)
+                .transition(.opacity)
             } else {
                 Button(action: send) {
                     Image(systemName: "arrow.right")
@@ -63,6 +90,12 @@ struct InputBarView: View {
         .padding(.horizontal, Theme.Spacing.lg)
         .padding(.bottom, 14)
         .onAppear { focused = true }
+        .onChange(of: speech.transcript) { _, words in
+            if speech.isListening || !words.isEmpty { text = words }
+        }
+        .onChange(of: speech.error) { _, message in
+            if let message { appState.errorMessage = message }
+        }
     }
 
     private var canSend: Bool {

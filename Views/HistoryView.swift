@@ -125,6 +125,7 @@ private struct HistoryRow: View {
         switch message.origin {
         case .nudge: return ("bolt.fill", "nudge")
         case .digest: return ("doc.text.fill", "digest")
+        case .background: return ("tray.and.arrow.down.fill", "task")
         case .reply: return nil
         }
     }

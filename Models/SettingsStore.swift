@@ -64,6 +64,11 @@ final class SettingsStore: ObservableObject {
     /// Optional -- empty means "use agentModel," matching JUGNU_SEARCH_MODEL's
     /// own fallback to JUGNU_MODEL in llm_client.py.
     @Published var searchModel: String { didSet { defaults.set(searchModel, forKey: Keys.searchModel) } }
+    /// Model tiers. FAST handles cheap judgement calls (routing, checking
+    /// work, extracting memories); DEEP handles hard planning, writing,
+    /// analysis and code. Empty = fall back to Agent / Planner respectively.
+    @Published var fastModel: String { didSet { defaults.set(fastModel, forKey: Keys.fastModel) } }
+    @Published var deepModel: String { didSet { defaults.set(deepModel, forKey: Keys.deepModel) } }
 
     // API mode
     @Published var apiBaseURL: String { didSet { defaults.set(apiBaseURL, forKey: Keys.apiBaseURL) } }
@@ -76,6 +81,8 @@ final class SettingsStore: ObservableObject {
     @Published var apiPlannerModelOverride: String { didSet { defaults.set(apiPlannerModelOverride, forKey: Keys.apiPlannerModelOverride) } }
     @Published var apiAgentModelOverride: String { didSet { defaults.set(apiAgentModelOverride, forKey: Keys.apiAgentModelOverride) } }
     @Published var apiSearchModelOverride: String { didSet { defaults.set(apiSearchModelOverride, forKey: Keys.apiSearchModelOverride) } }
+    @Published var apiFastModel: String { didSet { defaults.set(apiFastModel, forKey: Keys.apiFastModel) } }
+    @Published var apiDeepModel: String { didSet { defaults.set(apiDeepModel, forKey: Keys.apiDeepModel) } }
     @Published var apiKey: String { didSet { KeychainStore.set(apiKey, for: Keys.apiKey) } }
 
     // MARK: - Embeddings (independent of the chat provider above)
@@ -143,6 +150,10 @@ final class SettingsStore: ObservableObject {
         static let plannerModel = "settings.plannerModel"
         static let agentModel = "settings.agentModel"
         static let searchModel = "settings.searchModel"
+        static let fastModel = "settings.fastModel"
+        static let deepModel = "settings.deepModel"
+        static let apiFastModel = "settings.apiFastModel"
+        static let apiDeepModel = "settings.apiDeepModel"
         static let apiBaseURL = "settings.apiBaseURL"
         static let apiChatModel = "settings.apiChatModel"
         static let apiPlannerModelOverride = "settings.apiPlannerModelOverride"
@@ -184,6 +195,10 @@ final class SettingsStore: ObservableObject {
         plannerModel = defaults.string(forKey: Keys.plannerModel) ?? "qwen3.6:27b"
         agentModel = defaults.string(forKey: Keys.agentModel) ?? "qwen3.5:9b"
         searchModel = defaults.string(forKey: Keys.searchModel) ?? ""
+        fastModel = defaults.string(forKey: Keys.fastModel) ?? ""
+        deepModel = defaults.string(forKey: Keys.deepModel) ?? ""
+        apiFastModel = defaults.string(forKey: Keys.apiFastModel) ?? ""
+        apiDeepModel = defaults.string(forKey: Keys.apiDeepModel) ?? ""
         apiBaseURL = defaults.string(forKey: Keys.apiBaseURL)
             ?? "https://generativelanguage.googleapis.com/v1beta/openai"
         apiChatModel = defaults.string(forKey: Keys.apiChatModel) ?? "gemini-3.1-flash-lite"
@@ -237,12 +252,16 @@ final class SettingsStore: ObservableObject {
             // JUGNU_AGENT_MODEL -- it also doubles as SEARCH's fallback.
             env["JUGNU_MODEL"] = agentModel
             if !searchModel.isEmpty { env["JUGNU_SEARCH_MODEL"] = searchModel }
+            if !fastModel.isEmpty { env["JUGNU_FAST_MODEL"] = fastModel }
+            if !deepModel.isEmpty { env["JUGNU_DEEP_MODEL"] = deepModel }
         case .api:
             env["JUGNU_API_BASE_URL"] = apiBaseURL
             env["JUGNU_API_CHAT_MODEL"] = apiChatModel
             if !apiPlannerModelOverride.isEmpty { env["JUGNU_PLANNER_API_MODEL"] = apiPlannerModelOverride }
             if !apiAgentModelOverride.isEmpty { env["JUGNU_AGENT_API_MODEL"] = apiAgentModelOverride }
             if !apiSearchModelOverride.isEmpty { env["JUGNU_SEARCH_API_MODEL"] = apiSearchModelOverride }
+            if !apiFastModel.isEmpty { env["JUGNU_FAST_API_MODEL"] = apiFastModel }
+            if !apiDeepModel.isEmpty { env["JUGNU_DEEP_API_MODEL"] = apiDeepModel }
             if !apiKey.isEmpty {
                 // First of several candidate names llm_client._api_key()
                 // checks, so this always wins regardless of what

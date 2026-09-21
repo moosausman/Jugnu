@@ -20,6 +20,7 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
                 header
+                AutonomySettingsSection(appState: appState)
                 modelSection
                 awarenessSection
                 spotifySection
@@ -126,6 +127,18 @@ struct SettingsView: View {
                 placeholder: "leave blank to use the Agent model",
                 helpText: "Rewrites and reasons over web search results specifically. Optional -- falls back to Agent."
             )
+            SettingsTextRow(
+                label: "Fast model (checks and routing)",
+                text: $settings.fastModel,
+                placeholder: "leave blank to use the Agent model",
+                helpText: "Cheap judgement calls: verifying results, deciding if a reply answers a question, extracting memories."
+            )
+            SettingsTextRow(
+                label: "Deep model (hard work)",
+                text: $settings.deepModel,
+                placeholder: "leave blank to use the Planner model",
+                helpText: "Complex planning, writing study material and reports, analysis and code."
+            )
             Text("Pulled via `ollama pull <model>` — these are Ollama model tags, not filenames.")
                 .font(Theme.text(10.5))
                 .foregroundStyle(Theme.inkFaint)
@@ -141,6 +154,19 @@ struct SettingsView: View {
                 text: $settings.apiChatModel,
                 placeholder: "e.g. gemini-3.1-flash-lite",
                 helpText: "The default every role below uses unless you override it specifically."
+            )
+
+            SettingsTextRow(
+                label: "Fast model (checks and routing)",
+                text: $settings.apiFastModel,
+                placeholder: "same as Agent / Chat model",
+                helpText: "Cheap judgement calls: verifying results, routing, extracting memories. Use your quickest model."
+            )
+            SettingsTextRow(
+                label: "Deep model (hard work)",
+                text: $settings.apiDeepModel,
+                placeholder: "same as Planner / Chat model",
+                helpText: "Complex planning, writing, analysis and code. Point this at your strongest model, e.g. a Pro model."
             )
 
             Toggle("Use a different model per role", isOn: $showAPIRoleOverrides.animation(Theme.Motion.snappy))

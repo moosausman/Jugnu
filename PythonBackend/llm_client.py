@@ -82,8 +82,8 @@ import requests
 # ---------------------------------------------------------------------------
 
 
-_API_TIMEOUT = float(os.environ.get("JUGNU_API_TIMEOUT", "60"))
-_API_RETRIES = int(os.environ.get("JUGNU_API_RETRIES", "1"))
+_API_TIMEOUT = float(os.environ.get("JUGNU_API_TIMEOUT", "120"))
+_API_RETRIES = int(os.environ.get("JUGNU_API_RETRIES", "2"))
 # Local Ollama calls had zero retry logic -- any transient hiccup (daemon
 # still starting, a model swap mid-request, a brief connection reset) took
 # down the whole turn immediately, while API mode already retried the same
@@ -124,12 +124,22 @@ _KEY_ENV_CANDIDATES = [
     "GROQ_API_KEY",
     "TOGETHER_API_KEY",
 ]
-_ROLES = ("PLANNER", "AGENT", "SEARCH", "EMBED")
+_ROLES = ("PLANNER", "AGENT", "SEARCH", "EMBED", "FAST", "DEEP")
+
+# Model tiers. FAST is for cheap judgement calls (routing, verification,
+# memory extraction); DEEP for hard planning, coding and analysis. Each
+# falls back to an existing role, so nothing changes until a tier model is
+# configured:  FAST -> AGENT,  DEEP -> PLANNER.
+_ROLE_FALLBACK = {"FAST": "AGENT", "DEEP": "PLANNER"}
+
 
 def _provider_for(role: str) -> str:
     role = role.upper()
     assert role in _ROLES, f"unknown role {role!r}, expected one of {_ROLES}"
-    return (os.environ.get(f"JUGNU_{role}_PROVIDER") or os.environ.get("JUGNU_PROVIDER", "local")).lower()
+    explicit = os.environ.get(f"JUGNU_{role}_PROVIDER")
+    if not explicit and role in _ROLE_FALLBACK:
+        explicit = os.environ.get(f"JUGNU_{_ROLE_FALLBACK[role]}_PROVIDER")
+    return (explicit or os.environ.get("JUGNU_PROVIDER", "local")).lower()
 
 # ---------------------------------------------------------------------------
 # Local-mode model resolution
@@ -155,6 +165,10 @@ def _provider_for(role: str) -> str:
 #   JUGNU_EMBED_MODEL     default: nomic-embed-text (EMBED role)
 def _local_model_for(role: str) -> str:
     role = role.upper()
+    if role == "FAST":
+        return os.environ.get("JUGNU_FAST_MODEL") or _local_model_for("AGENT")
+    if role == "DEEP":
+        return os.environ.get("JUGNU_DEEP_MODEL") or _local_model_for("PLANNER")
     if role == "PLANNER":
         return os.environ.get("JUGNU_PLANNER_MODEL", "qwen3.6:27b")
     if role == "SEARCH":
@@ -201,7 +215,11 @@ def _api_base_url() -> str:
     return url.rstrip("/")
 
 def _api_model_for(role: str) -> str:
-    model = os.environ.get(f"JUGNU_{role.upper()}_API_MODEL") or os.environ.get("JUGNU_API_CHAT_MODEL")
+    role = role.upper()
+    model = os.environ.get(f"JUGNU_{role}_API_MODEL")
+    if not model and role in _ROLE_FALLBACK:
+        model = os.environ.get(f"JUGNU_{_ROLE_FALLBACK[role]}_API_MODEL")
+    model = model or os.environ.get("JUGNU_API_CHAT_MODEL")
     if not model:
         raise RuntimeError(
             f"No API chat model configured for role {role}. Set "
@@ -307,16 +325,23 @@ def _post_with_retries(url, headers, payload):
             resp = requests.post(url, headers=headers, json=payload, timeout=_API_TIMEOUT)
             resp.raise_for_status()
             return resp.json()
-        except requests.exceptions.HTTPError as exc:
+        except requests.exceptions.HTTPError:
             # Surface Google's actual error message instead of the generic
-            # "400 Client Error: Bad Request" that hides it.
+            # "400 Client Error: Bad Request" that hides it. The URL is not
+            # included -- some providers put the key in it.
             try:
                 body = resp.json()
             except Exception:
                 body = resp.text
-            last_exc = RuntimeError(f"{exc} -- response body: {body}")
+            status = resp.status_code
+            last_exc = RuntimeError(f"model API error {status}: {str(body)[:800]}")
+            # 4xx other than rate limiting won't get better by retrying.
+            if status not in (408, 429) and status < 500:
+                break
             if attempt < _API_RETRIES:
-                time.sleep(0.5 * (attempt + 1))
+                retry_after = resp.headers.get("retry-after")
+                delay = float(retry_after) if retry_after and retry_after.isdigit() else 2.0 * (attempt + 1)
+                time.sleep(min(delay, 20.0))
         except Exception as exc:
             last_exc = exc
             if attempt < _API_RETRIES:

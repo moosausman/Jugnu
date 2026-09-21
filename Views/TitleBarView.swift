@@ -3,9 +3,11 @@ import SwiftUI
 struct TitleBarView: View {
     @ObservedObject var appState: AppState
     @Binding var showHistory: Bool
+    @Binding var showActivity: Bool
 
     @State private var statusHovering = false
     @State private var historyHovering = false
+    @State private var activityHovering = false
 
     private var lastAssistantMessage: ChatMessage? {
         appState.messages.last(where: { $0.role == .assistant })
@@ -19,6 +21,7 @@ struct TitleBarView: View {
         switch lastAssistantMessage?.origin {
         case .nudge: return ("bolt.fill", Theme.clay, "Jugnu checked in unprompted")
         case .digest: return ("doc.text.fill", Theme.clay, "Daily digest")
+        case .background: return ("tray.and.arrow.down.fill", Theme.clay, "A background task reported back")
         case .reply, nil: return nil
         }
     }
@@ -96,6 +99,29 @@ struct TitleBarView: View {
 
             Spacer()
 
+            // Plan, background tasks, memory, skills and the log. A dot
+            // appears when something there needs the user.
+            Button(action: { withAnimation(Theme.Motion.snappy) { showActivity.toggle(); showHistory = false } }) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "list.bullet.rectangle")
+                        .font(.system(size: 13))
+                    if appState.activityNeedsAttention || !appState.backgroundRuns.isEmpty {
+                        Circle()
+                            .fill(appState.activityNeedsAttention ? Theme.danger : Theme.clay)
+                            .frame(width: 6, height: 6)
+                            .offset(x: 3, y: -2)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(activityHovering ? Theme.ink : Theme.inkDim)
+            .scaleEffect(activityHovering ? 1.08 : 1)
+            .animation(Theme.Motion.snappy, value: activityHovering)
+            .onHover { activityHovering = $0 }
+            .keyboardShortcut("j", modifiers: .command)
+            .help("Activity: plan, tasks, memory, skills (⌘J)")
+
+
             Button(action: { withAnimation(Theme.Motion.snappy) { showHistory.toggle() } }) {
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.system(size: 13))
@@ -125,7 +151,7 @@ struct TitleBarView: View {
 }
 
 #Preview {
-    TitleBarView(appState: AppState(), showHistory: .constant(false))
+    TitleBarView(appState: AppState(), showHistory: .constant(false), showActivity: .constant(false))
         .background(Theme.windowBackground)
 }
 

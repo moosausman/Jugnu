@@ -4,6 +4,7 @@ import AppKit
 struct ContentView: View {
     @StateObject private var appState = AppState()
     @State private var showHistory = false
+    @State private var showActivity = false
 
     var body: some View {
         ZStack {
@@ -14,14 +15,21 @@ struct ContentView: View {
             BackgroundView(state: fireflyState)
 
             VStack(spacing: 0) {
-                TitleBarView(appState: appState, showHistory: $showHistory)
+                TitleBarView(appState: appState, showHistory: $showHistory, showActivity: $showActivity)
                 HeroView(appState: appState)
+                ApprovalStackView(appState: appState)
+                    .animation(Theme.Motion.settle, value: appState.approvals)
                 InputBarView(appState: appState)
             }
 
             if showHistory {
                 HistoryView(appState: appState, isPresented: $showHistory)
                     .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            if showActivity {
+                ActivityView(appState: appState, isPresented: $showActivity)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
         .frame(minWidth: Theme.WindowSize.min.width, minHeight: Theme.WindowSize.min.height)

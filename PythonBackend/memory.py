@@ -202,23 +202,28 @@ You have a dry wit. Use it sparingly and only when the moment genuinely calls fo
 
 You treat the user as highly intelligent. No hand-holding. No over-explaining."""
 
-AGENT_DISCIPLINE = """━━━ AGENT DISCIPLINE ━━━
-
-You are one specialist step in a larger plan, not the whole conversation.
-
-Do exactly what your task describes — nothing more, nothing less.
-
-Use tools instead of guessing or assuming. If a value you need wasn't given
-
-to you in the task or in an earlier step's result below, say what's missing
-
-instead of inventing it.
-
-Report plainly what you found or did when you're done. You are not writing
-
-the reply the user sees — another layer phrases that — so skip pleasantries
-
-and just state the outcome."""
+AGENT_DISCIPLINE = """━━━ HOW YOU WORK ━━━
+You are one specialist step in a larger plan. Own your task completely:
+- Do YOUR task fully -- every part of it -- but not other tasks in the plan;
+  they are handled separately and run in parallel.
+- Act, don't describe. Use tools to find what you need instead of guessing,
+  and to do the work instead of explaining how it could be done.
+- Make reasonable low-risk assumptions instead of stopping, and say which
+  ones you made in your report.
+- Verify your own work before reporting success: re-read the file you wrote,
+  list the event you created, run the test after the fix.
+- When a tool fails, read its error_type and recovery hint and adapt: fix
+  the arguments, try another tool or location, or work around it. Don't
+  repeat a failing call unchanged.
+- Consequential actions (sending, deleting permanently, installing,
+  publishing) are confirmed with the user automatically by the system --
+  prepare them properly (drafts, exact recipients, exact text) and call the
+  tool; don't ask in prose. If the user declines, adapt or report it.
+- Call ask_user ONLY if information essential to the task is missing and no
+  tool could find it.
+- Finish with a plain report: what you did, what you found (with paths,
+  names, dates, URLs), what couldn't be done and why. Another layer writes
+  the user-facing reply."""
 
 # Shared by persona_system_prompt() and agent_system_prompt() (and, via
 
@@ -549,7 +554,8 @@ def agent_system_prompt(agent_name: str, facts: str = "") -> str:
 
     """System prompt for a specialist agent executing one task."""
 
-    parts = [IDENTITY, date_block(), AGENT_DISCIPLINE, SITUATIONAL_AWARENESS]
+    from injection import UNTRUSTED_CONTENT_RULE
+    parts = [IDENTITY, date_block(), AGENT_DISCIPLINE, SITUATIONAL_AWARENESS, UNTRUSTED_CONTENT_RULE]
 
     # Agents are the layer that actually touches the screen, so the
     # quiet-working rule belongs here rather than in the persona prompt.
@@ -577,7 +583,7 @@ def agent_system_prompt(agent_name: str, facts: str = "") -> str:
 
 
 
-def persona_reply(prompt: str) -> str:
+def persona_reply(prompt: str, role: str = "AGENT") -> str:
     """Generate a tool-free, user-facing reply with the AGENT model.
 
     The import is local so importing memory remains lightweight and does not
@@ -594,7 +600,7 @@ def persona_reply(prompt: str) -> str:
     ]
     response = chat(
         messages=messages,
-        role="AGENT",
+        role=role,
     )
     # `or ""` because a model can legitimately return null/empty content
     # (a refusal, a safety stop, an empty completion). Every other call
@@ -716,109 +722,55 @@ def clear_conversation():
 
 
 # --- Long Term Facts ---
-
 #
+# Facts used to live in a flat user_facts.json (key -> value, newest write
+# silently wins, no confidence or history). They're now "user" memories in
+# memory_store.py, which tracks source, confidence, contradictions and
+# history, and which the user can inspect and edit from the app. These
+# functions keep their old signatures so every caller works unchanged; the
+# old file is imported once, on first use, then renamed.
 
-# facts_as_string() is called once per task in a plan (agent_system_prompt),
+_facts_migrated = False
 
-# once for the final synthesis, and once for the persisted conversation's
 
-# system prompt (persona_system_prompt) -- so a single 4-task turn was
-
-# opening, reading, and JSON-parsing this file 5+ times before this cache
-
-# existed. mtime-based, not TTL-based: any external edit to the file (or
-
-# our own save_fact()) invalidates it immediately, so it can never serve
-
-# stale facts.
-
-_facts_cache: dict | None = None
-
-_facts_cache_mtime: float | None = None
-
+def _store():
+    global _facts_migrated
+    import memory_store
+    if not _facts_migrated:
+        _facts_migrated = True
+        try:
+            memory_store.migrate_facts_file(FACTS_FILE)
+        except Exception:
+            pass
+    return memory_store
 
 
 def load_facts():
-
-    """Loads long term facts about the user"""
-
-    global _facts_cache, _facts_cache_mtime
-
-    if not os.path.exists(FACTS_FILE):
-
-        _facts_cache, _facts_cache_mtime = {}, None
-
-        return _facts_cache
-
-    mtime = os.path.getmtime(FACTS_FILE)
-
-    if _facts_cache is not None and _facts_cache_mtime == mtime:
-
-        return _facts_cache
-
-    with open(FACTS_FILE, "r") as f:
-
-        content = f.read()
-
-    _facts_cache = json.loads(content) if content.strip() else {}
-
-    _facts_cache_mtime = mtime
-
-    return _facts_cache
+    """Stable user facts as {key: content}, for anything still wanting the
+    old dictionary shape."""
+    facts = {}
+    for m in _store().list_memories(kind="user", limit=500):
+        key = (m.get("key") or m["id"])
+        facts[key.removeprefix("fact.")] = m["content"]
+    return facts
 
 
-
-def save_fact(key: str, value: str):
-
-    """Saves a fact about the user e.g. save_fact('name', 'Moosa')"""
-
-    global _facts_cache, _facts_cache_mtime
-
-    facts = load_facts()
-
-    facts[key] = value
-
-    with open(FACTS_FILE, "w") as f:
-
-        json.dump(facts, f, indent=2)
-
-    _facts_cache, _facts_cache_mtime = facts, os.path.getmtime(FACTS_FILE)
-
+def save_fact(key: str, value: str, source: str = "user_stated", confidence: float = 0.9):
+    """Saves a fact about the user e.g. save_fact('name', 'Moosa'). Returns
+    the memory_store result (created / reinforced / superseded / kept)."""
+    store = _store()
+    return store.remember(f"{key.replace('_', ' ')}: {value}", kind="user", key=f"fact.{key}",
+                          source=source, confidence=confidence, importance=0.7)
 
 
 def clear_facts() -> None:
-
-    """Wipes every saved fact -- the "reset facts" action (see bridge.py's
-
-    "reset_facts" request). Overwrites the file with an empty object
-
-    rather than deleting it: a concurrent load_facts() call that lands
-
-    mid-write always sees a valid (if momentarily empty) JSON file this
-
-    way, never a briefly-missing one."""
-
-    global _facts_cache, _facts_cache_mtime
-
-    with open(FACTS_FILE, "w") as f:
-
-        json.dump({}, f, indent=2)
-
-    _facts_cache, _facts_cache_mtime = {}, os.path.getmtime(FACTS_FILE)
-
+    """Wipes every saved user fact -- the "reset facts" action."""
+    _store().clear("user")
 
 
 def facts_as_string():
-
-    """Returns all facts as a string to inject into system prompt"""
-
-    facts = load_facts()
-
-    if not facts:
-
+    """What Jugnu knows about the user, for system prompts."""
+    try:
+        return _store().user_profile_block()
+    except Exception:
         return ""
-
-    lines = [f"- {k}: {v}" for k, v in facts.items()]
-
-    return "Facts about the user:\n" + "\n".join(lines)

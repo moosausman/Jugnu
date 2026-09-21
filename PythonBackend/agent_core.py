@@ -17,13 +17,22 @@ ever want it back -- just pass it every tool instead of a subset).
 import json
 
 import llm_client
+import run_context
+import tool_runtime
 
 
 class AgentResult:
     def __init__(self, content: str, messages: list, steps=None,
-                 exhausted: bool = False, last_failed: bool = False):
+                 exhausted: bool = False, last_failed: bool = False,
+                 outcomes=None, needs_input: str | None = None):
         self.content = content
         self.messages = messages
+        # Structured record of every tool call (tool_runtime.ToolOutcome) --
+        # what the verifier, the learning loop and the UI reason about.
+        self.outcomes = outcomes or []
+        # Set when the agent called ask_user: the question to put to the
+        # user. The executor stops the plan there instead of guessing.
+        self.needs_input = needs_input
         # The tool sequence this run actually used, in order. skills.py
         # stores it so the same job doesn't have to be worked out again --
         # see executor.run_task.
@@ -36,55 +45,9 @@ class AgentResult:
         self.last_failed = last_failed
 
 
-MAX_TOOL_RESULT_CHARS = 6000
-# Generous enough for a real result (a file preview, a directory listing, a
-# full JSON error) while stopping a single verbose tool call -- a brew
-# install's build log, a large file read, a long shell capture -- from
-# dominating the context. Nothing upstream of this caps tool output size at
-# all, and it matters more here than it looks: this doesn't just bloat one
-# message, it re-transmits itself on *every subsequent iteration* of this
-# task's loop, since the whole `messages` list is resent each time. That
-# compounding, not any one huge result by itself, is what actually runs a
-# long tool-calling task's context up over time.
-
-
-def _truncate_tool_result(result: str) -> str:
-    if len(result) <= MAX_TOOL_RESULT_CHARS:
-        return result
-    omitted = len(result) - MAX_TOOL_RESULT_CHARS
-    return (
-        result[:MAX_TOOL_RESULT_CHARS]
-        + f"\n\n... [truncated -- {omitted} more characters omitted. If you "
-        "need more of this, use a narrower/paginated tool instead of "
-        "assuming the rest matters -- file_tail/file_head/file_read_range "
-        "for a file, a more specific shell command, etc.]"
-    )
-
-
-def _looks_like_failure(result: str) -> bool:
-    """Best-effort read on whether a tool's result represents a failure --
-    used only to widen loop detection past exact-repeat matching (see
-    run_tool_loop's consecutive_failures), never to change what the model
-    actually sees. A false positive/negative here just means the "change
-    strategy" nudge fires a call earlier/later than ideal, not a wrong
-    answer, so this doesn't need to be exact.
-
-    Covers the two shapes results actually take: _run_one_tool's own
-    "Tool error: ..." string for a raised exception, and the {"ok": bool,
-    ...} convention nearly every MacBridge-backed tool follows for a
-    call that ran but didn't succeed (permission error, timeout, bad
-    args, etc.) -- as opposed to a legitimate negative answer to a
-    question (e.g. file_exists returning {"ok": true, "exists": false}
-    correctly stays "not a failure" here, since only the outer "ok"
-    is checked).
-    """
-    if result.startswith("Tool error:"):
-        return True
-    try:
-        parsed = json.loads(result)
-    except (json.JSONDecodeError, TypeError):
-        return False
-    return isinstance(parsed, dict) and parsed.get("ok") is False
+# Result truncation, redaction, failure classification and untrusted-
+# content wrapping all live in tool_runtime.execute() now -- the one path
+# every tool call takes.
 
 
 CONSECUTIVE_FAILURE_NUDGE_THRESHOLD = 3
@@ -119,6 +82,9 @@ def run_tool_loop(
     on_tool_call(name, args)     -- called right before running a tool
     on_tool_result(name, args, result) -- called right after
     """
+    ctx = run_context.current()
+    schemas_by_name = {s["function"]["name"]: s for s in schemas or []}
+    outcomes: list = []
     iterations = 0
     steps: list = []          # tool sequence, for skills.py
     last_result_failed = False
@@ -158,8 +124,10 @@ def run_tool_loop(
             messages.append(message.model_dump())
             return AgentResult(content=message.content or "", messages=messages,
                                steps=steps, exhausted=True,
-                               last_failed=last_result_failed)
+                               last_failed=last_result_failed, outcomes=outcomes)
 
+        ctx.checkpoint()
+        run_context.check_task_stop()
         if on_status:
             on_status("thinking")
 
@@ -170,11 +138,21 @@ def run_tool_loop(
         if not message.tool_calls:
             return AgentResult(content=message.content or "", messages=messages,
                                steps=steps, exhausted=False,
-                               last_failed=last_result_failed)
+                               last_failed=last_result_failed, outcomes=outcomes)
 
+        question = None
         for tool_call in message.tool_calls:
             name = tool_call.function.name
             args = tool_call.function.arguments or {}
+
+            if name == "ask_user" and question is None:
+                # Not executed: the question goes to the user through the
+                # normal reply path, and the plan pauses on it. Every tool
+                # call in this message still gets an answer (wire format).
+                question = str((args or {}).get("question") or "").strip() or "I need more information to continue."
+                messages.append({"role": "tool", "name": name,
+                                 "content": "Question passed to the user; waiting for their reply."})
+                continue
 
             call_sig = (name, json.dumps(args, sort_keys=True, default=str))
             is_exact_repeat = call_sig == last_call_sig
@@ -194,30 +172,39 @@ def run_tool_loop(
                 if on_tool_call:
                     on_tool_call(name, args)
 
-                result = _run_one_tool(functions, name, args)
+                outcome = tool_runtime.execute(name, args, functions, schemas_by_name, ctx=ctx)
+                outcomes.append(outcome)
+                result = outcome.text
 
                 if on_tool_result:
                     on_tool_result(name, args, result)
 
             last_call_sig = call_sig
-            messages.append({"role": "tool", "name": name, "content": _truncate_tool_result(result)})
+            messages.append({"role": "tool", "name": name, "content": result})
 
             # Record what was tried, for skills.py. Skipped repeats aren't
             # part of a route worth remembering -- they're the loop noticing
             # it was stuck.
             if not is_exact_repeat:
                 steps.append({"tool": name, "args": args})
-            last_result_failed = _looks_like_failure(result)
+                last_result_failed = not outcome.ok
+            else:
+                last_result_failed = True
 
             # An exact repeat counts toward the streak too, not just a
             # detected failure -- calling the same thing twice in a row is
             # itself a sign of being stuck, arguably the clearest one, so
             # letting it reset the counter to 0 would hide the pattern
             # right when it's most obvious.
-            if is_exact_repeat or _looks_like_failure(result):
+            if last_result_failed:
                 consecutive_failures += 1
             else:
                 consecutive_failures = 0
+
+        if question is not None:
+            return AgentResult(content=question, messages=messages, steps=steps,
+                               exhausted=False, last_failed=False, outcomes=outcomes,
+                               needs_input=question)
 
         # Nudge AFTER every tool result for this message has been appended,
         # never between them. Two bugs lived in the old in-loop version:
@@ -258,13 +245,3 @@ def run_tool_loop(
                 ),
             })
             consecutive_failures = 0
-
-
-def _run_one_tool(functions, name, args) -> str:
-    if name not in functions:
-        return f"Unknown tool: {name}"
-    try:
-        result = functions[name](**args)
-    except Exception as e:
-        return f"Tool error: {e}"
-    return result if isinstance(result, str) else json.dumps(result, indent=2)

@@ -20,6 +20,7 @@ Safari browsing history is best-effort. It requires Full Disk Access and
 degrades to an empty section if unavailable or incompatible.
 """
 
+import contextvars
 import datetime
 import os
 import sqlite3
@@ -131,14 +132,19 @@ def _synthesis_prompt(sections: dict[str, str]) -> str:
 
 def build_report() -> str:
     """Gather today's data and make one AGENT-model synthesis call."""
+    # Each worker runs inside a copy of the caller's context, so both
+    # sections belong to the same run (and its approval/cancel state)
+    # instead of each silently getting a fresh background context.
     with ThreadPoolExecutor(max_workers=2) as pool:
         notion_future = pool.submit(
+            contextvars.copy_context().run,
             _gather_agent_section,
             "notion",
             "Get today's journal entry (if any) and list any notes or pages "
             "created or updated today.",
         )
         calendar_future = pool.submit(
+            contextvars.copy_context().run,
             _gather_agent_section,
             "calendar",
             "List today's calendar events, and any reminders due today or "

@@ -12,6 +12,13 @@ from .extra_tools import (
     create_temp_email, check_temp_email, read_temp_email_message,
 )
 from .notion_service import NotionService
+from .extended_tools import (
+    window_list, window_focus, window_arrange, window_set_frame, window_minimize, window_close,
+    ocr_image, ocr_screen, document_read, document_create, search_documents,
+    notes_search, notes_read, notes_create, notes_append, music_control, speak,
+    system_info, permissions_check, calendar_calendars, safari_read_page,
+    git_status, git_diff, git_log, git_commit, code_search, run_tests, daily_briefing,
+)
 
 # ------------------------
 # Tool functions
@@ -199,8 +206,12 @@ def list_learned_skills(limit: int = 20) -> dict:
         limit: Maximum number of skills to return, most-used first.
     """
     import skills
-    learned = skills.list_skills(limit=limit)
-    return {"ok": True, "count": len(learned), "skills": learned}
+    import skill_library
+    workflows = [{k: s[k] for k in ("id", "name", "purpose", "status", "version", "successes", "failures",
+                                    "success_rate")} for s in skill_library.list_all()][:limit]
+    routes = skills.list_skills(limit=limit)
+    return {"ok": True, "workflows": workflows, "tool_routes": routes,
+            "count": len(workflows) + len(routes)}
 
 
 def save_fact(key: str, value: str) -> str:
@@ -214,11 +225,153 @@ def save_fact(key: str, value: str) -> str:
     - Anything they say they always or never want
 
     Do NOT save facts about one-time requests like 'open Spotify' or 'play this song'.
-    Only save things useful to remember in future conversations.
+    Only save things useful to remember in future conversations. Never save
+    passwords, keys or tokens -- they are refused.
+
+    Args:
+        key: Short canonical subject, e.g. "name", "university", "preferred_editor".
+            Saving the same key again replaces the old value (history is kept).
+        value: The fact itself, e.g. "University of Toronto Mississauga".
     """
     from memory import save_fact as _save_fact
-    _save_fact(key, value)
+    from memory_store import MemoryRejected
+    try:
+        result = _save_fact(key, value)
+    except MemoryRejected as e:
+        return f"Not saved: {e}"
+    action = result.get("action")
+    if action == "superseded":
+        return f"Updated: {key} = {value} (replaced: {result['previous']['content']})"
+    if action == "kept_existing":
+        return f"Kept the existing, more certain memory for {key}: {result['memory']['content']}"
     return f"Remembered: {key} = {value}"
+
+
+def remember(content: str, kind: str = "semantic", key: str = "", confidence: float = 0.7,
+             scope: str = "global", source: str = "reflection", importance: float = 0.5) -> dict:
+    """Stores something worth knowing later in Jugnu's long-term memory.
+
+    Use for durable, reusable information -- not for one-off details of the
+    current task. Contradictions are handled automatically: saving the same
+    key again replaces the old memory only if the new source is at least as
+    trustworthy (a guess never overwrites what the user said). Secrets are
+    refused.
+
+    Args:
+        content: The memory, as one clear self-contained sentence, e.g.
+            "CSC236 lecture notes are in ~/Documents/UofT/CSC236".
+        kind: "user" (a stable preference or personal fact), "semantic" (a
+            fact about the user's world or machine), "strategy" (how a kind
+            of task is best done), or "episodic" (a notable past interaction).
+        key: Optional canonical subject used to detect contradictions, e.g.
+            "pref.editor", "course.csc236.notes_location".
+        confidence: 0-1, how sure you are. Guesses belong below 0.6.
+        scope: "global", or narrower: "project:/path", "app:Name", "task:studying".
+        source: "user_stated" if the user said it, "observed" if you saw it on
+            the machine, "tool_result", "reflection", or "inferred" for a guess.
+        importance: 0-1, how much this matters when it's relevant.
+    """
+    import memory_store
+    try:
+        result = memory_store.remember(content, kind=kind, key=key or None, confidence=confidence,
+                                       source=source, scope=scope, importance=importance)
+    except memory_store.MemoryRejected as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "action": result["action"], "id": result["memory"]["id"],
+            "replaced": (result.get("previous") or {}).get("content")}
+
+
+def recall_memory(query: str, kind: str = "", limit: int = 6) -> dict:
+    """Searches Jugnu's long-term memory for what it knows about a topic.
+
+    Read-only. Returns memories with their confidence and source -- treat
+    "inferred" ones as unconfirmed guesses, not facts.
+
+    Args:
+        query: What to look for, e.g. "CSC236 test date" or "preferred study times".
+        kind: Optional filter: "user", "episodic", "semantic", "error" or "strategy".
+        limit: Maximum number of memories to return.
+    """
+    import memory_store
+    kinds = (kind,) if kind in memory_store.KINDS else None
+    hits = memory_store.recall(query, kinds=kinds, k=max(1, min(int(limit), 20)), min_score=0.15)
+    return {"ok": True, "count": len(hits), "memories": [
+        {"id": h["id"], "kind": h["kind"], "content": h["content"], "confidence": round(h["confidence"], 2),
+         "source": h["source"], "scope": h["scope"], "updated_at": h["updated_at"]} for h in hits]}
+
+
+def forget_memory(memory_id: str) -> dict:
+    """Deletes one memory by id -- when the user says something Jugnu
+    remembered is wrong or should be forgotten.
+
+    Args:
+        memory_id: The memory's id, from recall_memory.
+    """
+    import memory_store
+    return {"ok": memory_store.delete(memory_id), "id": memory_id}
+
+
+def schedule_task(instruction: str, at: str = "", in_minutes: float = -1, every_minutes: float = 0,
+                  until: str = "") -> dict:
+    """Schedules work for Jugnu to do later, once or on repeat -- run as a
+    full background task when due (planned fresh each time).
+
+    Use when the user asks for something at a later time or regularly:
+    "every weekday at 8am prepare me for the day", "at 6pm summarize my
+    unread email", "in 2 hours check whether the build finished".
+
+    Args:
+        instruction: What to do each time, as a complete self-contained request.
+        at: When to first run: ISO local time like "2026-09-21T08:00", or a
+            time of day like "08:00" (its next occurrence). Leave empty when
+            using in_minutes.
+        in_minutes: Run this many minutes from now instead of at a time.
+        every_minutes: Repeat interval in minutes (1440 = daily, 10080 = weekly).
+            0 means run once.
+        until: Optional ISO time after which a repeating schedule stops.
+    """
+    import scheduler
+    try:
+        item = scheduler.add(instruction, at=at or None, in_minutes=None if in_minutes < 0 else in_minutes,
+                             every_minutes=every_minutes or None, until=until or None, kind="task")
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "schedule": item}
+
+
+def set_timer(minutes: float, message: str) -> dict:
+    """Sets a timer or reminder alarm: after `minutes`, the user gets a
+    notification and a chat message. For "remind me in 20 minutes to...".
+    For a dated to-do that should live in Reminders, use reminders_create.
+
+    Args:
+        minutes: How many minutes from now.
+        message: What to say when it goes off, e.g. "Stretch and drink water".
+    """
+    import scheduler
+    try:
+        item = scheduler.add(message, in_minutes=minutes, kind="notify", title=message)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "timer": item}
+
+
+def list_scheduled_tasks() -> dict:
+    """Lists everything scheduled: timers, one-off and repeating tasks, with
+    their next run time. Read-only."""
+    import scheduler
+    items = scheduler.list_schedules()
+    return {"ok": True, "count": len(items), "schedules": items}
+
+
+def cancel_scheduled_task(schedule_id: str) -> dict:
+    """Cancels a scheduled task or timer by id (from list_scheduled_tasks).
+
+    Args:
+        schedule_id: The schedule's id.
+    """
+    import scheduler
+    return {"ok": scheduler.cancel(schedule_id), "id": schedule_id}
 
 
 def search_web(query: str) -> str:
@@ -2280,6 +2433,13 @@ _tool_functions = [
     spotify_now_playing,
     spotify_control,
     save_fact,
+    remember,
+    recall_memory,
+    forget_memory,
+    schedule_task,
+    set_timer,
+    list_scheduled_tasks,
+    cancel_scheduled_task,
     current_session,
     set_target_session,
     list_learned_skills,
@@ -2422,6 +2582,36 @@ _tool_functions = [
     create_temp_email,
     check_temp_email,
     read_temp_email_message,
+
+    # Windows, OCR, documents, Notes, media, speech, system, dev, briefing (extended_tools.py)
+    window_list,
+    window_focus,
+    window_arrange,
+    window_set_frame,
+    window_minimize,
+    window_close,
+    ocr_image,
+    ocr_screen,
+    document_read,
+    document_create,
+    search_documents,
+    notes_search,
+    notes_read,
+    notes_create,
+    notes_append,
+    music_control,
+    speak,
+    system_info,
+    permissions_check,
+    calendar_calendars,
+    safari_read_page,
+    git_status,
+    git_diff,
+    git_log,
+    git_commit,
+    code_search,
+    run_tests,
+    daily_briefing,
 
     # Notion (notion_service.py, via the wrappers above)
     notion_search,

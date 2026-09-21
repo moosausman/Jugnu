@@ -376,20 +376,70 @@ def _searxng_query_html(q: str) -> list[dict]:
     return results
 
 
+_BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 "
+               "(KHTML, like Gecko) Version/17.0 Safari/605.1.15")
+
+
+def _brave_html_query(q: str) -> list[dict]:
+    """Direct Brave Search results page -- used when the local SearXNG
+    instance comes back empty (its upstream engines are often rate-limited
+    or CAPTCHA'd, which silently produced zero results for every query)."""
+    resp = _SESSION.get("https://search.brave.com/search", params={"q": q, "source": "web"},
+                        headers={"User-Agent": _BROWSER_UA, "Accept-Language": "en"}, timeout=10)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    results = []
+    for block in soup.select('div.snippet[data-type="web"]')[: CFG.results_per_query]:
+        a_tag = block.select_one("a[href^='http']")
+        if not a_tag:
+            continue
+        title = block.select_one(".title")
+        desc = block.select_one(".snippet-description") or block.select_one(".content")
+        results.append({
+            "href": a_tag.get("href", "").strip(),
+            "title": title.get_text(" ", strip=True) if title else a_tag.get_text(" ", strip=True),
+            "body": (desc.get_text(" ", strip=True) if desc else block.get_text(" ", strip=True))[:500],
+        })
+    return results
+
+
+def _wikipedia_query(q: str) -> list[dict]:
+    """Last resort: Wikipedia's search API (reliable, but encyclopedic only)."""
+    resp = _SESSION.get("https://en.wikipedia.org/w/api.php", params={
+        "action": "query", "list": "search", "srsearch": q, "srlimit": 5, "format": "json"},
+        headers={"User-Agent": "Jugnu/1.0 (personal assistant)"}, timeout=8)
+    resp.raise_for_status()
+    out = []
+    for hit in resp.json().get("query", {}).get("search", []):
+        title = hit.get("title", "")
+        snippet = BeautifulSoup(hit.get("snippet", ""), "html.parser").get_text(" ", strip=True)
+        out.append({"href": "https://en.wikipedia.org/wiki/" + title.replace(" ", "_"), "title": title, "body": snippet})
+    return out
+
+
 def _searxng_query(q: str) -> list[dict]:
+    results: list[dict] = []
     try:
-        r = _searxng_query_json(q)
-        logger.info("SearXNG JSON ok: %r → %d", q, len(r))
-        return r
+        results = _searxng_query_json(q)
+        logger.info("SearXNG JSON ok: %r → %d", q, len(results))
     except Exception as e:
         logger.warning("SearXNG JSON failed (%s) — trying HTML", e)
-    try:
-        r = _searxng_query_html(q)
-        logger.info("SearXNG HTML ok: %r → %d", q, len(r))
-        return r
-    except Exception as e:
-        logger.warning("SearXNG HTML failed: %s", e)
-        return []
+        try:
+            results = _searxng_query_html(q)
+            logger.info("SearXNG HTML ok: %r → %d", q, len(results))
+        except Exception as e2:
+            logger.warning("SearXNG HTML failed: %s", e2)
+    if results:
+        return results
+    for name, fallback in (("Brave", _brave_html_query), ("Wikipedia", _wikipedia_query)):
+        try:
+            results = fallback(q)
+            logger.info("%s fallback: %r → %d", name, q, len(results))
+            if results:
+                return results
+        except Exception as e:
+            logger.warning("%s fallback failed: %s", name, e)
+    return []
 
 
 def searxng_search(query: str, classification: dict) -> tuple[list[dict], list[str]]:

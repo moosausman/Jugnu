@@ -19,6 +19,8 @@ struct ChatMessage: Identifiable, Equatable {
         case reply
         case nudge
         case digest
+        /// A background or scheduled workflow finished (or needs the user).
+        case background
     }
 
     let id = UUID()

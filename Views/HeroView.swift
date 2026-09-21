@@ -26,6 +26,7 @@ struct HeroView: View {
         switch lastAssistantMessage?.origin {
         case .nudge: return ("bolt.fill", Theme.clay)
         case .digest: return ("doc.text.fill", Theme.clay)
+        case .background: return ("tray.and.arrow.down.fill", Theme.clay)
         case .reply, nil: return nil
         }
     }
@@ -34,6 +35,7 @@ struct HeroView: View {
         switch origin {
         case .nudge: return "jugnu checked in"
         case .digest: return "daily digest"
+        case .background: return "background task"
         case .reply: return ""
         }
     }
@@ -57,6 +59,10 @@ struct HeroView: View {
             firefly
             eyebrow
             answer
+            if appState.thinking, let line = appState.progressLine, !line.isEmpty {
+                progressRow(line)
+            }
+            if let notice = appState.securityNotice { securityBanner(notice) }
             if let error = appState.errorMessage { errorBanner(error) }
         }
         .padding(.horizontal, Theme.Spacing.xl)
@@ -65,6 +71,7 @@ struct HeroView: View {
         .animation(Theme.Motion.settle, value: lastAssistantMessage)
         .animation(Theme.Motion.settle, value: lastUser)
         .animation(Theme.Motion.settle, value: appState.errorMessage)
+        .animation(Theme.Motion.settle, value: appState.progressLine)
     }
 
     // MARK: - Firefly
@@ -236,6 +243,49 @@ struct HeroView: View {
             .help(didCopy ? "Copied" : "Copy this answer")
             .offset(x: 4, y: -2)
         }
+    }
+
+    // MARK: - Progress
+
+    /// One quiet line of what Jugnu is doing right now on a longer task --
+    /// enough to know it's moving, without turning the chat into a log.
+    private func progressRow(_ line: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Theme.clay)
+            Text(line)
+                .font(Theme.text(11))
+                .foregroundStyle(Theme.inkDim)
+                .lineLimit(2)
+                .truncationMode(.tail)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .transition(.opacity)
+        .id(line)
+    }
+
+    private func securityBanner(_ notice: String) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: "shield.lefthalf.filled")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.clay)
+                .padding(.top, 1)
+            Text(notice)
+                .font(Theme.text(11))
+                .foregroundStyle(Theme.inkDim)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button { appState.securityNotice = nil } label: {
+                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.inkFaint)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: Theme.radiusSmall).fill(Theme.clay.opacity(0.10)))
+        .transition(.opacity)
     }
 
     // MARK: - Error

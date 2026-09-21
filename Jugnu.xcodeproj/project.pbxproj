@@ -33,6 +33,11 @@
 		91E102E93049DFD7002B826C /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91E102E73049DFD7002B826C /* SettingsStore.swift */; };
 		91E102ED3049E0C7002B826C /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91E102EC3049E0C7002B826C /* KeychainStore.swift */; };
 		91ED926A3046ED6D007DCD9A /* VisualEffectBackground.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91ED92693046ED6D007DCD9A /* VisualEffectBackground.swift */; };
+		B9108141B136BFBBCF35669A /* ActivityModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E11681D2F8AF5DAD0B19AF1A /* ActivityModels.swift */; };
+		A19C0043EAA60468842828A3 /* ApprovalCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6789333A06FADB07AA46025E /* ApprovalCardView.swift */; };
+		E8B4BDF47901D91C9F4181A1 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7147E3A1BC2151AF05601CA2 /* ActivityView.swift */; };
+		98D8579A5FCED9B695F0CA91 /* AutonomySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D07A94CA3D9414EAD093C21 /* AutonomySettingsView.swift */; };
+		094D5261C2DB518DCC31F008 /* SpeechInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67DB2E402F853667AEF602F7 /* SpeechInput.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -63,6 +68,11 @@
 		91E102E73049DFD7002B826C /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
 		91E102EC3049E0C7002B826C /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		91ED92693046ED6D007DCD9A /* VisualEffectBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualEffectBackground.swift; sourceTree = "<group>"; };
+		E11681D2F8AF5DAD0B19AF1A /* ActivityModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityModels.swift; sourceTree = "<group>"; };
+		6789333A06FADB07AA46025E /* ApprovalCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalCardView.swift; sourceTree = "<group>"; };
+		7147E3A1BC2151AF05601CA2 /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
+		8D07A94CA3D9414EAD093C21 /* AutonomySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutonomySettingsView.swift; sourceTree = "<group>"; };
+		67DB2E402F853667AEF602F7 /* SpeechInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechInput.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -119,6 +129,7 @@
 				91E102E73049DFD7002B826C /* SettingsStore.swift */,
 				9113B06F3026890800E0B9B7 /* LoginItemManager.swift */,
 				9113B06D302688E700E0B9B7 /* FireflyStatusIcon.swift */,
+							E11681D2F8AF5DAD0B19AF1A /* ActivityModels.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -129,6 +140,7 @@
 				91D6F0072FF772D40066D9E4 /* MacBridgeLauncher.swift */,
 				915290702FF70BB000A335C4 /* Theme.swift */,
 				915290712FF70BB000A335C4 /* WindowAccessor.swift */,
+							67DB2E402F853667AEF602F7 /* SpeechInput.swift */,
 			);
 			path = Support;
 			sourceTree = "<group>";
@@ -145,6 +157,9 @@
 				915290772FF70BB000A335C4 /* HistoryView.swift */,
 				915290782FF70BB000A335C4 /* InputBarView.swift */,
 				915290792FF70BB000A335C4 /* TitleBarView.swift */,
+							6789333A06FADB07AA46025E /* ApprovalCardView.swift */,
+							7147E3A1BC2151AF05601CA2 /* ActivityView.swift */,
+							8D07A94CA3D9414EAD093C21 /* AutonomySettingsView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -246,6 +261,11 @@
 				915290882FF70BB000A335C4 /* FireflyView.swift in Sources */,
 				91E102E93049DFD7002B826C /* SettingsStore.swift in Sources */,
 				91E102E130487C88002B826C /* SettingsView.swift in Sources */,
+							B9108141B136BFBBCF35669A /* ActivityModels.swift in Sources */,
+							A19C0043EAA60468842828A3 /* ApprovalCardView.swift in Sources */,
+							E8B4BDF47901D91C9F4181A1 /* ActivityView.swift in Sources */,
+							98D8579A5FCED9B695F0CA91 /* AutonomySettingsView.swift in Sources */,
+							094D5261C2DB518DCC31F008 /* SpeechInput.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -383,6 +403,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Jugnu reads which app and window you have open, and controls apps like Finder, Safari and Terminal, to carry out what you ask it to do.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Jugnu listens only while you hold the microphone button, so you can speak a request instead of typing it.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Jugnu turns what you say into text for your request. Recognition runs on this Mac when possible.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -413,6 +435,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Jugnu reads which app and window you have open, and controls apps like Finder, Safari and Terminal, to carry out what you ask it to do.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Jugnu listens only while you hold the microphone button, so you can speak a request instead of typing it.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Jugnu turns what you say into text for your request. Recognition runs on this Mac when possible.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

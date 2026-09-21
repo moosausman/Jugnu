@@ -134,6 +134,7 @@ log file) will show without corrupting the protocol stream.
 import datetime
 import json
 import os
+import queue
 import sys
 import threading
 import time
@@ -156,6 +157,19 @@ import proactive
 import semantic_memory as smem
 import session
 import skills
+import approvals
+import audit
+import permissions
+import run_context
+import learning
+import memory_store
+import scheduler
+import skill_library
+import tasks_store
+import workflows
+
+_run_manager = None
+from redact import redact
 
 PROACTIVE_ENABLED = os.environ.get("JUGNU_PROACTIVE", "0") == "1"
 PROACTIVE_POLL_SECONDS = float(os.environ.get("JUGNU_PROACTIVE_POLL_SECONDS", "20"))
@@ -196,17 +210,28 @@ def visible_history(conversation: list) -> list:
 
 
 def handle_send(conversation: list, request_id: str, text: str) -> None:
+    ctx = run_context.RunContext(request_id=request_id, goal=text, emit=emit, origin="user")
+    run_context.register(ctx)
+    token = run_context.activate(ctx)
+    emit({"type": "run_started", "id": request_id, "run_id": ctx.run_id, "goal": text[:300]})
+    audit.log("turn_start", run_id=ctx.run_id, summary=text)
     try:
         def on_plan(plan):
             emit({
                 "type": "plan",
                 "id": request_id,
+                "run_id": ctx.run_id,
                 "goal": plan.goal,
+                "objective": plan.objective,
+                "assumptions": plan.assumptions,
+                "request_type": plan.request_type,
+                "complexity": plan.complexity,
                 "session": macbridge.active_session(),
                 "tasks": [t.to_dict() for t in plan.tasks],
             })
 
         def on_task_start(task):
+            ctx.current_task = task.id
             emit({
                 "type": "status", "id": request_id,
                 "label": f"{task.agent}: {task.description}",
@@ -222,18 +247,13 @@ def handle_send(conversation: list, request_id: str, text: str) -> None:
         def on_tool_call(task, name, args):
             emit({
                 "type": "tool", "id": request_id, "name": name,
-                "content": json.dumps(args), "task_id": task.id,
+                "content": redact(json.dumps(args)), "task_id": task.id,
             })
 
         def on_tool_result(task, name, args, result):
-            # stderr only -- not part of the documented stdout wire protocol,
-            # so this can't break the Swift frontend's parsing. Exists so
-            # failures (e.g. a shell_stage permission/AppleScript error) are
-            # visible when running `python3 bridge.py` directly instead of
-            # silently vanishing -- previously this callback wasn't wired up
-            # at all, so tool results never surfaced anywhere.
-            preview = str(result)[:300]
-            log(f"tool_result {name}({json.dumps(args)}) -> {preview}")
+            # stderr only -- not part of the stdout wire protocol. Redacted,
+            # since stderr ends up in Xcode's console and log files.
+            log(redact(f"tool_result {name}({json.dumps(args)}) -> {str(result)[:300]}"))
 
         answer = session.run_turn(
             conversation,
@@ -244,14 +264,29 @@ def handle_send(conversation: list, request_id: str, text: str) -> None:
             on_tool_call=on_tool_call,
             on_tool_result=on_tool_result,
         )
-        emit({"type": "assistant", "id": request_id, "content": answer})
+        emit({"type": "assistant", "id": request_id, "run_id": ctx.run_id, "content": answer})
+        audit.log("turn_end", run_id=ctx.run_id, status="ok", summary=answer[:1000])
 
+    except run_context.RunCancelled:
+        answer = "Stopped. Nothing further will run for that request."
+        session.record_interrupted_turn(conversation, answer)
+        emit({"type": "assistant", "id": request_id, "run_id": ctx.run_id, "content": answer, "cancelled": True})
+        audit.log("turn_end", run_id=ctx.run_id, status="cancelled")
     except Exception as e:
-        log(f"error during turn: {e}")
-        emit({"type": "error", "id": request_id, "message": str(e)})
+        message = redact(str(e))
+        log(f"error during turn: {message}")
+        emit({"type": "error", "id": request_id, "run_id": ctx.run_id, "message": message})
+        audit.log("error", run_id=ctx.run_id, status="turn_failed", summary=message)
+    finally:
+        run_context.deactivate(token)
+        run_context.unregister(ctx)
+        approvals.cancel_for_run(ctx.run_id)
 
 
 def handle_daily_review(conv_ref: "_ConversationRef", request_id: str) -> None:
+    ctx = run_context.RunContext(request_id=request_id, goal="daily review", emit=emit, origin="user")
+    run_context.register(ctx)
+    token = run_context.activate(ctx)
     try:
         report = daily_review.build_report()
         if report:
@@ -260,9 +295,14 @@ def handle_daily_review(conv_ref: "_ConversationRef", request_id: str) -> None:
             "type": "digest", "id": request_id,
             "content": report or "Not enough happened today yet to put together a recap.",
         })
+    except run_context.RunCancelled:
+        emit({"type": "digest", "id": request_id, "content": "Stopped."})
     except Exception as e:
-        log(f"error building daily review: {e}")
-        emit({"type": "error", "id": request_id, "message": str(e)})
+        log(f"error building daily review: {redact(str(e))}")
+        emit({"type": "error", "id": request_id, "message": redact(str(e))})
+    finally:
+        run_context.deactivate(token)
+        run_context.unregister(ctx)
 
 
 def _ready_payload(conversation: list) -> dict:
@@ -428,17 +468,265 @@ class DailyReviewScheduler:
         self._emit({"type": "digest", "id": str(uuid.uuid4()), "content": report})
 
 
+def _find_run(request: dict):
+    """A live run by run_id, or by the UI request id that started it."""
+    run_id = request.get("run_id")
+    if run_id:
+        return run_context.find(run_id)
+    req_id = request.get("id")
+    for ctx in run_context.live_runs():
+        if req_id and ctx.request_id == req_id:
+            return ctx
+    runs = run_context.live_runs()
+    return runs[0] if len(runs) == 1 and not run_id and not req_id else None
+
+
+class TurnWorker:
+    """Runs user turns (and on-demand reviews) one at a time on its own
+    thread, so the stdin loop stays free to receive approvals, cancel,
+    pause and settings changes while work is in progress. Before this,
+    the loop ran each turn inline -- nothing could reach the backend
+    until the turn ended, which made approvals impossible."""
+
+    def __init__(self, conv_ref: "_ConversationRef", turn_lock: threading.Lock):
+        self._conv_ref = conv_ref
+        self._turn_lock = turn_lock
+        self._queue: "queue.Queue" = queue.Queue()
+        self.busy = threading.Event()
+
+    def start(self) -> None:
+        threading.Thread(target=self._loop, name="turn-worker", daemon=True).start()
+
+    def submit(self, job) -> None:
+        self._queue.put(job)
+
+    def _loop(self) -> None:
+        while True:
+            job = self._queue.get()
+            self.busy.set()
+            try:
+                with self._turn_lock:
+                    job()
+            except Exception as e:
+                log(f"turn worker error: {redact(str(e))}")
+            finally:
+                self.busy.clear()
+
+
+def _handle_management(kind: str, request: dict, conv_ref, worker) -> bool:
+    """Requests that don't need the turn lock. Returns True if handled."""
+    if kind == "approval_response":
+        ok = approvals.respond(str(request.get("approval_id", "")), str(request.get("decision", "deny")),
+                               str(request.get("note", "") or ""))
+        if not ok:
+            emit({"type": "approval_resolved", "approval_id": request.get("approval_id"),
+                  "decision": "expired"})
+        return True
+    if kind in ("cancel", "pause", "resume"):
+        ctx = _find_run(request)
+        if ctx is None:
+            emit({"type": "notice", "message": f"No running task to {kind}."})
+            return True
+        if kind == "cancel":
+            ctx.cancel()
+            approvals.cancel_for_run(ctx.run_id)
+        elif kind == "pause":
+            ctx.pause()
+        else:
+            ctx.resume()
+        emit({"type": "run_state", "run_id": ctx.run_id, "id": ctx.request_id,
+              "state": {"cancel": "cancelling", "pause": "paused", "resume": "running"}[kind]})
+        audit.log(f"run_{kind}", run_id=ctx.run_id)
+        return True
+    if kind == "get_permissions":
+        emit({"type": "permissions", "permissions": permissions.describe()})
+        return True
+    if kind == "set_permissions":
+        try:
+            permissions.update(request.get("patch") or {})
+            audit.log("permissions_change", summary="permissions updated", detail=request.get("patch"))
+            emit({"type": "permissions", "permissions": permissions.describe(), "saved": True})
+        except Exception as e:
+            emit({"type": "notice", "message": f"Couldn't save permissions: {redact(str(e))}"})
+        return True
+    if kind == "get_approvals":
+        emit({"type": "approvals", "approvals": approvals.pending()})
+        return True
+    if kind == "get_audit":
+        try:
+            rows = audit.recent(limit=int(request.get("limit") or 200), run_id=request.get("run_id"))
+        except Exception as e:
+            rows = []
+            log(f"audit read failed: {e}")
+        emit({"type": "audit", "events": rows})
+        return True
+    if kind == "ping":
+        emit(_ready_payload(conv_ref.value))
+        return True
+    if kind.startswith("memory_") or kind == "tool_stats":
+        _handle_memory_request(kind, request)
+        return True
+    if kind.startswith("run_") or kind == "runs_list":
+        _handle_run_request(kind, request)
+        return True
+    if kind.startswith("schedule"):
+        _handle_schedule_request(kind, request)
+        return True
+    if kind.startswith("skill") or kind == "proposals_list":
+        _handle_skill_request(kind, request)
+        return True
+    if kind == "os_permissions":
+        threading.Thread(target=_emit_os_permissions, name="os-permissions", daemon=True).start()
+        return True
+    return False
+
+
+def _emit_os_permissions() -> None:
+    """macOS grants for each live session's MacBridge (your account, and the
+    Jugnu account when it's logged in). Never triggers a prompt."""
+    from tools.extended_tools import permissions_check
+    result = {}
+    for name in ("primary", "agent"):
+        if not macbridge.session_available(name):
+            result[name] = {"ok": False, "error": "not running"}
+            continue
+        token = macbridge._active.set(name)
+        try:
+            result[name] = permissions_check()
+        except Exception as e:
+            result[name] = {"ok": False, "error": redact(str(e))}
+        finally:
+            macbridge._active.reset(token)
+    emit({"type": "os_permissions", "sessions": result})
+
+
+def _emit_skills() -> None:
+    emit({"type": "skills", "skills": skill_library.list_all(), "routes": skills.list_skills(limit=100)})
+
+
+def _handle_skill_request(kind: str, request: dict) -> None:
+    skill_id = str(request.get("skill_id", ""))
+    try:
+        if kind == "skills_list":
+            pass
+        elif kind == "skill_accept":
+            skill_library.update(skill_id, status="active")
+        elif kind == "skill_disable":
+            skill_library.update(skill_id, status="disabled")
+        elif kind == "skill_update":
+            skill_library.update(skill_id, **(request.get("fields") or {}))
+        elif kind == "skill_revert":
+            skill_library.revert(skill_id, int(request.get("version") or 0))
+        elif kind == "skill_delete":
+            skill_library.delete(skill_id)
+        elif kind == "proposals_list":
+            emit({"type": "proposals", "proposals": audit.recent(limit=100, kinds=["code_change_proposal"])})
+            return
+    except (KeyError, ValueError) as e:
+        emit({"type": "notice", "message": f"Skill change failed: {redact(str(e))}"})
+    _emit_skills()
+
+
+def _handle_run_request(kind: str, request: dict) -> None:
+    run_id = str(request.get("run_id", ""))
+    if kind == "runs_list":
+        emit({"type": "runs", "runs": tasks_store.list_runs(limit=int(request.get("limit") or 60))})
+    elif kind == "run_get":
+        emit({"type": "run_detail", "run": tasks_store.get(run_id)})
+    elif kind == "run_resume":
+        ok = _run_manager is not None and _run_manager.resume(run_id)
+        if not ok:
+            emit({"type": "notice", "message": "That task can't be resumed (no saved plan)."})
+    elif kind == "run_delete":
+        tasks_store.delete(run_id)
+        emit({"type": "runs", "runs": tasks_store.list_runs(limit=60)})
+
+
+def _handle_schedule_request(kind: str, request: dict) -> None:
+    try:
+        if kind == "schedule_cancel":
+            scheduler.cancel(str(request.get("schedule_id", "")))
+        elif kind == "schedule_toggle":
+            scheduler.set_enabled(str(request.get("schedule_id", "")), bool(request.get("enabled")))
+        elif kind == "schedule_add":
+            scheduler.add(str(request.get("instruction", "")), at=request.get("at") or None,
+                          in_minutes=request.get("in_minutes"), every_minutes=request.get("every_minutes"),
+                          kind=request.get("kind") or "task")
+    except ValueError as e:
+        emit({"type": "notice", "message": f"Schedule change failed: {e}"})
+    emit({"type": "schedules", "schedules": scheduler.list_schedules()})
+
+
+def _emit_memories(request: dict) -> None:
+    kind = request.get("kind") or None
+    emit({
+        "type": "memories",
+        "kind": kind,
+        "query": request.get("query", ""),
+        "items": memory_store.list_memories(kind=kind, query=request.get("query") or "",
+                                            include_inactive=bool(request.get("include_inactive")),
+                                            limit=int(request.get("limit") or 300)),
+        "counts": memory_store.counts(),
+    })
+
+
+def _handle_memory_request(kind: str, request: dict) -> None:
+    """View/edit/delete what Jugnu remembers. Every change is audited by
+    memory_store itself."""
+    try:
+        if kind == "memory_list":
+            _emit_memories(request)
+        elif kind == "memory_get":
+            emit({"type": "memory_detail", "memory": memory_store.get(str(request.get("memory_id", "")))})
+        elif kind == "memory_add":
+            memory_store.remember(str(request.get("content", "")), kind=request.get("kind") or "user",
+                                  key=request.get("key") or None, confidence=float(request.get("confidence") or 1.0),
+                                  source="user_stated", scope=request.get("scope") or "global",
+                                  importance=float(request.get("importance") or 0.7))
+            _emit_memories({"kind": request.get("list_kind")})
+        elif kind == "memory_update":
+            fields = request.get("fields") or {}
+            memory_store.update(str(request.get("memory_id", "")),
+                                content=fields.get("content"), confidence=fields.get("confidence"),
+                                scope=fields.get("scope"), importance=fields.get("importance"),
+                                key=fields.get("key"), status=fields.get("status"))
+            _emit_memories({"kind": request.get("list_kind")})
+        elif kind == "memory_delete":
+            memory_store.delete(str(request.get("memory_id", "")))
+            _emit_memories({"kind": request.get("list_kind")})
+        elif kind == "memory_clear":
+            memory_store.clear(request.get("kind") or None)
+            _emit_memories({})
+        elif kind == "tool_stats":
+            emit({"type": "tool_stats", "tools": memory_store.tool_stats()})
+    except (KeyError, ValueError) as e:
+        emit({"type": "notice", "message": f"Memory change failed: {redact(str(e))}"})
+
+
 def main() -> None:
     conv_ref = _ConversationRef(load_conversation())
+    approvals.set_emitter(emit)
     emit(_ready_payload(conv_ref.value))
 
     turn_lock = threading.Lock()
+    worker = TurnWorker(conv_ref, turn_lock)
+    worker.start()
 
     # Drop expired timeline rows and reclaim their pages. Queued onto
     # semantic_memory's background writer, so it never delays "ready" or
-    # the first turn. Without this, memory grew without bound -- the prune
-    # function existed but its own docstring admitted nothing ever called it.
+    # the first turn.
     smem.maintain()
+    threading.Thread(target=audit.prune, name="audit-prune", daemon=True).start()
+    threading.Thread(target=memory_store.maintain, name="memory-maintain", daemon=True).start()
+    learning.install_hooks()
+    learning.set_notifier(emit)
+
+    global _run_manager
+    _run_manager = workflows.RunManager(emit, lambda: conv_ref.value)
+    session.run_manager = _run_manager
+    scheduler.SchedulerLoop(on_task=_run_manager.run_scheduled, on_notify=_run_manager.deliver_timer).start()
+    threading.Thread(target=_run_manager.on_startup, name="resume-interrupted", daemon=True).start()
+    threading.Thread(target=tasks_store.prune, name="runs-prune", daemon=True).start()
 
     if ACTIVITY_TRACKING_ENABLED:
         activity_log.ActivityLogger().start()
@@ -463,74 +751,59 @@ def main() -> None:
         try:
             request = json.loads(line)
         except json.JSONDecodeError:
-            log(f"could not parse request: {line!r}")
+            log(f"could not parse request: {redact(line)[:200]!r}")
             continue
 
         kind = request.get("type")
 
+        try:
+            if _handle_management(kind, request, conv_ref, worker):
+                continue
+        except Exception as e:
+            log(f"error handling {kind}: {redact(str(e))}")
+            emit({"type": "notice", "message": redact(str(e))})
+            continue
+
         if kind == "send":
             request_id = request.get("id", "")
+            text = request.get("text", "")
             emit({"type": "status", "id": request_id, "label": "thinking"})
-            with turn_lock:
-                handle_send(conv_ref.value, request_id, request.get("text", ""))
-
-        elif kind == "clear":
-            with turn_lock:
-                conv_ref.value = clear_conversation()
-            emit({"type": "cleared"})
-
-        elif kind == "reset_facts":
-            # Deliberately its own request type, not folded into "clear":
-            # facts (name, preferences, standing instructions) and the
-            # conversation are different things to forget, and someone
-            # clearing one shouldn't have to also lose the other.
-            with turn_lock:
-                clear_facts()
-                # Facts are baked into the conversation's system prompt
-                # (see persona_system_prompt) -- without refreshing it
-                # here, the live in-memory conversation would keep
-                # talking as if the old facts still applied until the
-                # next full restart, even though the file on disk is
-                # already empty.
-                conv_ref.value[0]["content"] = persona_system_prompt(facts_as_string())
-            emit({"type": "facts_cleared"})
-
-        elif kind == "reset_memory":
-            # Same reasoning as reset_facts, for the other longitudinal
-            # store: activity log, search history, habit patterns --
-            # everything semantic_memory.py has been quietly building up.
-            # Doesn't touch the conversation or facts at all.
-            with turn_lock:
-                smem.clear_all()
-                # Learned procedures are derived from the same history, so
-                # "forget what I've been doing" has to include how it
-                # learned to do it -- otherwise the timeline is wiped while
-                # skills quietly keep replaying routes built from it.
-                skills.clear_all()
-            emit({"type": "memory_cleared"})
-
-        elif kind == "ping":
-            emit(_ready_payload(conv_ref.value))
+            worker.submit(lambda rid=request_id, t=text: handle_send(conv_ref.value, rid, t))
 
         elif kind == "daily_review":
             request_id = request.get("id", "")
             emit({"type": "status", "id": request_id, "label": "thinking"})
-            with turn_lock:
-                handle_daily_review(conv_ref, request_id)
+            worker.submit(lambda rid=request_id: handle_daily_review(conv_ref, rid))
+
+        elif kind in ("clear", "reset_facts", "reset_memory"):
+            # These rewrite state a running turn is using, so they wait for
+            # it rather than racing it -- but on a thread, so the stdin loop
+            # (and with it approvals/cancel) never blocks behind them.
+            def _reset(kind=kind):
+                with turn_lock:
+                    if kind == "clear":
+                        conv_ref.value = clear_conversation()
+                        emit({"type": "cleared"})
+                    elif kind == "reset_facts":
+                        clear_facts()
+                        conv_ref.value[0]["content"] = persona_system_prompt(facts_as_string())
+                        emit({"type": "facts_cleared"})
+                    else:
+                        smem.clear_all()
+                        skills.clear_all()
+                        # Learned experience too -- everything except the
+                        # user's own stated facts (that's "reset facts").
+                        for k in ("episodic", "semantic", "error", "strategy"):
+                            memory_store.clear(k)
+                        emit({"type": "memory_cleared"})
+            threading.Thread(target=_reset, name=f"{kind}", daemon=True).start()
 
         elif kind == "quit":
-            # Answering this is what makes BackendBridge.stop()'s graceful
-            # shutdown actually graceful -- without a handler here this
-            # fell through to "unknown request type" and did nothing, so
-            # every stop() unconditionally burned its full 1-second
-            # timeout waiting for an exit that was never coming, before
-            # falling back to SIGTERM every single time. All of this
-            # module's background threads (ProactiveWatcher,
-            # DailyReviewScheduler, ActivityLogger) are daemon=True, so
-            # breaking out of this loop and letting main() return is
-            # enough for the process to actually exit -- no explicit
-            # sys.exit() needed.
+            # Every background thread is daemon=True, so returning from
+            # main() is enough for the process to exit.
             log("received quit -- shutting down")
+            for ctx in run_context.live_runs():
+                ctx.cancel()
             break
 
         else:

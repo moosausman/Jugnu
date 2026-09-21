@@ -157,13 +157,20 @@ def _do_and_report(agent_name: str, task_description: str, why: str) -> "str | N
     task = Task(id=1, agent=agent_name, description=task_description)
     # Start from the default session, not wherever the last turn left it.
     from tools.macbridge import reset_session
+    import run_context
     reset_session()
+    # Nobody asked for this: policy treats it as unattended, so anything
+    # beyond reading waits for an explicit yes (see policy.decide).
+    ctx = run_context.RunContext(goal=task_description, user_initiated=False, origin="proactive")
+    token = run_context.activate(ctx)
     try:
         result = run_task(task, shared_memory={})
     except Exception as e:
         log(f"autonomous action failed ({agent_name}): {e}")
         return None  # a failed autonomous action stays silent -- never
         # surface a raw error as an unprompted message
+    finally:
+        run_context.deactivate(token)
 
     return _phrase(
         f"You just did this on your own, unprompted, because: "

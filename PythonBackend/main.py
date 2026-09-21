@@ -8,7 +8,14 @@ session.run_turn() -- this file only owns the terminal presentation
 """
 
 from memory import load_conversation, clear_conversation
+import approvals
+import run_context
 import session
+
+# No UI here: consequential actions are confirmed on this terminal.
+approvals.use_console(True)
+import learning  # noqa: E402
+learning.install_hooks()
 
 # ------------------------
 # Load conversation
@@ -68,6 +75,9 @@ while True:
     # alive for the next request -- this REPL didn't have the same
     # guard, so the same failure here took the whole session down and
     # lost the rest of the conversation with it. Same containment here now.
+    ctx = run_context.RunContext(goal=user_input, origin="user",
+                                 emit=lambda e: print(f"   … {e['message']}") if e.get("type") == "progress" else None)
+    token = run_context.activate(ctx)
     try:
         answer = session.run_turn(
             conversation,
@@ -77,9 +87,14 @@ while True:
             on_status=on_status,
             on_tool_result=on_tool_result,
         )
+    except KeyboardInterrupt:
+        print("\n⏹  Stopped.")
+        continue
     except Exception as e:
         print(f"\n⚠️  That turn hit an error and didn't complete: {e}")
         print("   Nothing from it was saved -- try again, or type 'clear' to reset.")
         continue
+    finally:
+        run_context.deactivate(token)
 
     print(f"\nJugnu: {answer}")
