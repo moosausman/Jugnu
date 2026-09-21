@@ -10,12 +10,20 @@ import SwiftUI
 /// becomes a regular app (its own menus, a Dock icon, ⌘-Tab), and when the
 /// last one closes it goes back to living only in the menu bar. The
 /// "Show in Dock while open" setting turns that off.
+///
+/// Minimizing the chat panel collapses it into a small firefly orb in a
+/// corner of the screen (FireflyOrb) rather than the Dock, unless that's
+/// turned off in Settings.
 @MainActor
 final class WindowManager: NSObject, NSWindowDelegate {
     static let shared = WindowManager()
 
     private var chatWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var orb: FireflyOrb?
+    /// The chat panel is minimized into the firefly orb.
+    private(set) var isCollapsed = false
+    private var transitioning = false
 
     private static let chatAutosaveName = "JugnuChatPanel"
 
@@ -40,8 +48,9 @@ final class WindowManager: NSObject, NSWindowDelegate {
     /// Shows the chat panel. From the menu bar icon it drops down under the
     /// icon, like a menu; from anywhere else it opens where it was left.
     func showChat(below button: NSStatusBarButton? = nil) {
+        if isCollapsed { expandFromFirefly(); return }
         let window = chatWindow ?? makeChatWindow()
-        if let button { position(window, below: button) }
+        if let button, !window.isMiniaturized { position(window, below: button) }
         present(window)
         NotificationCenter.default.post(name: .jugnuFocusInput, object: nil)
     }
@@ -50,6 +59,177 @@ final class WindowManager: NSObject, NSWindowDelegate {
         chatWindow?.orderOut(nil)
         afterWindowHidden()
     }
+
+    // MARK: - Minimize to the firefly
+
+    /// The yellow button, ⌘M and double-clicking the title bar land here.
+    func minimizeChat() {
+        guard let chat = chatWindow else { return }
+        if SettingsStore.shared.minimizeToFirefly {
+            collapseToFirefly()
+        } else {
+            (chat as? ChatWindow)?.miniaturizeToDock()
+        }
+    }
+
+    private func collapseToFirefly() {
+        guard let chat = chatWindow, chat.isVisible, !isCollapsed, !transitioning else { return }
+        let orb = self.orb ?? makeOrb()
+        orb.prepare(on: chat.screen, unreadAfter: AppState.shared.messages.count)
+        isCollapsed = true
+        transitioning = true
+        // The panel fades while a stand-in shrinks from its frame into the orb.
+        morph(from: chat.frame, to: orb.discFrame, growing: false, below: chat) { [weak self] in
+            orb.show(animated: false)
+            self?.transitioning = false
+        }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.12
+            chat.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            chat.orderOut(nil)
+            chat.alphaValue = 1
+            self?.afterWindowHidden()
+        })
+    }
+
+    private func expandFromFirefly() {
+        guard isCollapsed, let chat = chatWindow, !transitioning else { return }
+        isCollapsed = false
+        transitioning = true
+        let from = orb?.discFrame ?? NSRect(x: chat.frame.midX, y: chat.frame.midY, width: 1, height: 1)
+        orb?.hide()
+        morph(from: from, to: chat.frame, growing: true, below: nil) { [weak self] in
+            guard let self else { return }
+            chat.alphaValue = 0
+            self.present(chat)
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.12
+                chat.animator().alphaValue = 1
+            }, completionHandler: { self.transitioning = false })
+            NotificationCenter.default.post(name: .jugnuFocusInput, object: nil)
+        }
+    }
+
+    /// The Settings switch changed. Turning it off while collapsed just
+    /// removes the orb; the menu bar icon still opens Jugnu.
+    func minimizeToFireflyChanged() {
+        guard !SettingsStore.shared.minimizeToFirefly, isCollapsed else { return }
+        isCollapsed = false
+        orb?.hide()
+    }
+
+    private func makeOrb() -> FireflyOrb {
+        let orb = FireflyOrb()
+        orb.onOpen = { [weak self] in self?.showChat() }
+        orb.onSettings = { [weak self] in self?.showSettings() }
+        orb.onHide = { SettingsStore.shared.minimizeToFirefly = false }
+        self.orb = orb
+        return orb
+    }
+
+    /// The collapse/expand animation: a dark panel the colour of the chat
+    /// window that shrinks into the orb's disc (or grows back out of it)
+    /// while the firefly glows up in its centre, so the last frame looks
+    /// exactly like the orb. Core Animation in a transparent, click-through
+    /// overlay; skipped with Reduce Motion on.
+    ///
+    /// It deliberately doesn't use a picture of the window: AppKit's own
+    /// snapshots leave out the scrolling conversation, and capturing the
+    /// real window needs deprecated screen-capture APIs.
+    private func morph(from: NSRect, to: NSRect, growing: Bool, below window: NSWindow?,
+                       completion: @escaping () -> Void) {
+        let screen = NSScreen.screens.first { $0.frame.intersects(growing ? to : from) } ?? NSScreen.main
+        guard let area = screen?.frame, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            completion()
+            return
+        }
+        let overlay = NSWindow(contentRect: area, styleMask: .borderless, backing: .buffered, defer: false)
+        overlay.isOpaque = false
+        overlay.backgroundColor = .clear
+        overlay.hasShadow = false
+        overlay.level = .floating
+        overlay.ignoresMouseEvents = true
+        overlay.isReleasedWhenClosed = false
+        overlay.canHide = false   // Jugnu hides itself as the panel collapses; the morph must stay up
+        overlay.collectionBehavior = [.canJoinAllSpaces, .transient, .fullScreenAuxiliary]
+        let root = CALayer()
+        let host = NSView(frame: NSRect(origin: .zero, size: area.size))
+        host.layer = root
+        host.wantsLayer = true
+        overlay.contentView = host
+
+        func local(_ r: NSRect) -> CGRect { r.offsetBy(dx: -area.minX, dy: -area.minY) }
+        let small = local(growing ? from : to), large = local(growing ? to : from)
+        let a = growing ? small : large, b = growing ? large : small
+
+        let card = CALayer()
+        card.backgroundColor = NSColor(Theme.windowBackground).withAlphaComponent(0.95).cgColor
+        card.borderColor = NSColor.white.withAlphaComponent(0.1).cgColor
+        card.borderWidth = 1
+        card.shadowColor = NSColor.black.cgColor
+        card.shadowOpacity = 0.35
+        card.shadowRadius = 10
+        card.shadowOffset = CGSize(width: 0, height: -3)
+        card.frame = b
+        card.cornerRadius = growing ? 16 : b.width / 2
+        root.addSublayer(card)
+
+        let glyph = CALayer()
+        glyph.contents = Self.fireflyGlyph
+        glyph.contentsScale = 2
+        glyph.bounds = CGRect(x: 0, y: 0, width: 64, height: 64)
+        glyph.position = CGPoint(x: b.midX, y: b.midY)
+        glyph.opacity = growing ? 0 : 1
+        root.addSublayer(glyph)
+
+        if let window {
+            overlay.order(.below, relativeTo: window.windowNumber)
+        } else {
+            overlay.orderFrontRegardless()
+        }
+
+        func anim(_ key: String, _ fromValue: Any, _ toValue: Any) -> CABasicAnimation {
+            let x = CABasicAnimation(keyPath: key)
+            x.fromValue = fromValue
+            x.toValue = toValue
+            return x
+        }
+        let duration = 0.32
+        let timing = CAMediaTimingFunction(controlPoints: 0.3, 0.0, 0.2, 1.0)
+        let cardMotion = CAAnimationGroup()
+        cardMotion.animations = [
+            anim("position", NSValue(point: NSPoint(x: a.midX, y: a.midY)), NSValue(point: NSPoint(x: b.midX, y: b.midY))),
+            anim("bounds.size", NSValue(size: a.size), NSValue(size: b.size)),
+            anim("cornerRadius", growing ? a.width / 2 : 16, growing ? 16 : b.width / 2),
+        ]
+        cardMotion.duration = duration
+        cardMotion.timingFunction = timing
+        let glyphMotion = CAAnimationGroup()
+        glyphMotion.animations = [
+            anim("position", NSValue(point: NSPoint(x: a.midX, y: a.midY)), NSValue(point: NSPoint(x: b.midX, y: b.midY))),
+            anim("opacity", growing ? 1 : 0, growing ? 0 : 1),
+        ]
+        glyphMotion.duration = duration
+        glyphMotion.timingFunction = timing
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock {
+            completion()
+            // Let whatever replaces the stand-in draw first.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { overlay.orderOut(nil) }
+        }
+        card.add(cardMotion, forKey: "morph")
+        glyph.add(glyphMotion, forKey: "morph")
+        CATransaction.commit()
+    }
+
+    /// The firefly, drawn once as an image for the morph.
+    private static let fireflyGlyph: CGImage? = {
+        let renderer = ImageRenderer(content: FireflyView(state: .idle, size: 34).frame(width: 64, height: 64))
+        renderer.scale = 2
+        return renderer.cgImage
+    }()
 
     func toggleChat(below button: NSStatusBarButton? = nil) {
         isChatFrontmost ? hideChat() : showChat(below: button)
@@ -68,7 +248,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
     private func makeChatWindow() -> NSWindow {
         let window = ChatWindow(
             contentRect: NSRect(origin: .zero, size: Theme.WindowSize.initial),
-            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
         window.title = "Jugnu"
         window.titleVisibility = .hidden
@@ -87,8 +267,6 @@ final class WindowManager: NSObject, NSWindowDelegate {
         window.contentMaxSize = Theme.WindowSize.max
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        window.standardWindowButton(.zoomButton)?.isHidden = true
 
         let host = NSHostingView(rootView: ContentView(appState: AppState.shared))
         host.sizingOptions = [.minSize]
@@ -172,8 +350,10 @@ final class WindowManager: NSObject, NSWindowDelegate {
         if NSApp.isActive && !anyWindowVisible { NSApp.hide(nil) }
     }
 
+    /// A window minimized to the Dock still counts as open: the app keeps
+    /// its Dock icon so the minimized window has somewhere to live.
     private var anyWindowVisible: Bool {
-        chatWindow?.isVisible == true || settingsWindow?.isVisible == true
+        chatWindow?.isVisible == true || chatWindow?.isMiniaturized == true || settingsWindow?.isVisible == true
     }
 
     func updateActivationPolicy() {
@@ -208,6 +388,10 @@ final class WindowManager: NSObject, NSWindowDelegate {
         DispatchQueue.main.async { self.afterWindowHidden() }
     }
 
+    func windowDidDeminiaturize(_ notification: Notification) {
+        updateActivationPolicy()
+    }
+
     func windowDidBecomeKey(_ notification: Notification) {
         if (notification.object as? NSWindow) === chatWindow {
             NotificationCenter.default.post(name: .jugnuFocusInput, object: nil)
@@ -220,12 +404,22 @@ extension Notification.Name {
     static let jugnuShowActivity = Notification.Name("jugnuShowActivity")
 }
 
-/// The chat panel's window. Escape hides it, like a menu.
+/// The chat panel's window. Escape hides it, like a menu; minimizing goes
+/// through WindowManager so it can collapse into the firefly.
 private final class ChatWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
     override func cancelOperation(_ sender: Any?) {
         WindowManager.shared.hideChat()
+    }
+
+    override func miniaturize(_ sender: Any?) {
+        WindowManager.shared.minimizeChat()
+    }
+
+    /// The standard minimize to the Dock, for when the firefly is turned off.
+    func miniaturizeToDock() {
+        super.miniaturize(nil)
     }
 }

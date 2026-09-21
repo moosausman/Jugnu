@@ -123,8 +123,8 @@ private struct HeaderView: View {
             .help("More")
         }
         .animation(Theme.Motion.snappy, value: status)
-        // The close button sits at the far left of the title bar.
-        .padding(.leading, 36)
+        // Clears the window buttons at the left of the title bar.
+        .padding(.leading, 78)
         .padding(.trailing, 8)
         .frame(height: 30)
         .padding(.top, 1)

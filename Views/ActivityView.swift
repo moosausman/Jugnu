@@ -50,7 +50,7 @@ struct ActivityView: View {
                 IconButton(symbol: "xmark", size: 11, help: "Close (Esc)") { isPresented = false }
                     .keyboardShortcut(.escape, modifiers: [])
             }
-            .padding(.leading, 36)
+            .padding(.leading, 78)
             .padding(.trailing, 8)
             .frame(height: 30)
             .padding(.top, 1)

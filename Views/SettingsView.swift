@@ -117,6 +117,9 @@ private struct GeneralPane: View {
                 RowDivider()
                 ToggleRow("Show in Dock while open", detail: "Gives Jugnu its own menu bar when it's in front.",
                           isOn: $settings.showInDockWhenOpen)
+                RowDivider()
+                ToggleRow("Minimize to firefly", detail: "Shrinks into a firefly in the corner instead of the Dock.",
+                          isOn: $settings.minimizeToFirefly)
             }
             SettingsGroup("Working") {
                 ToggleRow("Work quietly", detail: "Silent commands and background tabs instead of taking over the screen.",

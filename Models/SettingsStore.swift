@@ -153,6 +153,15 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Minimizing the chat panel collapses it into a firefly orb in a
+    /// corner of the screen instead of the Dock.
+    @Published var minimizeToFirefly: Bool {
+        didSet {
+            defaults.set(minimizeToFirefly, forKey: Keys.minimizeToFirefly)
+            WindowManager.shared.minimizeToFireflyChanged()
+        }
+    }
+
     // MARK: - Storage
 
     private let defaults = UserDefaults.standard
@@ -187,6 +196,7 @@ final class SettingsStore: ObservableObject {
         static let dailyReviewEnabled = "settings.dailyReviewEnabled"
         static let dailyReviewTime = "settings.dailyReviewTime"
         static let showInDock = "settings.showInDockWhenOpen"
+        static let minimizeToFirefly = "settings.minimizeToFirefly"
     }
 
     // MARK: - Init
@@ -235,6 +245,7 @@ final class SettingsStore: ObservableObject {
         dailyReviewTime = defaults.object(forKey: Keys.dailyReviewTime) as? Date
             ?? Calendar.current.date(bySettingHour: 21, minute: 0, second: 0, of: Date()) ?? Date()
         showInDockWhenOpen = defaults.object(forKey: Keys.showInDock) as? Bool ?? true
+        minimizeToFirefly = defaults.object(forKey: Keys.minimizeToFirefly) as? Bool ?? true
     }
 
     // MARK: - Bridging to the Python backend

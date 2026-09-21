@@ -36,6 +36,7 @@
 		3BD1F61D2AF492BAF74B223B /* MarkdownText.swift in Sources */ = {isa = PBXBuildFile; fileRef = A412BE5FD730BE656AD4A563 /* MarkdownText.swift */; };
 		B7573AF4DD91893BF198D03E /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BCE956A45391F8C868A9B94 /* ConversationView.swift */; };
 		E752F52AF59ED1E73EB8BB87 /* WindowManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 939CB155360C872D4DF95708 /* WindowManager.swift */; };
+		86AF38101A0B9AD79654DC44 /* FireflyOrb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CD209FAD702A508EC1942EA /* FireflyOrb.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -69,6 +70,7 @@
 		A412BE5FD730BE656AD4A563 /* MarkdownText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownText.swift; sourceTree = "<group>"; };
 		0BCE956A45391F8C868A9B94 /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
 		939CB155360C872D4DF95708 /* WindowManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowManager.swift; sourceTree = "<group>"; };
+		4CD209FAD702A508EC1942EA /* FireflyOrb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyOrb.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -104,6 +106,7 @@
 				915290672FF70BB000A335C4 /* AppDelegate.swift */,
 				915290682FF70BB000A335C4 /* JugnuApp.swift */,
 							939CB155360C872D4DF95708 /* WindowManager.swift */,
+							4CD209FAD702A508EC1942EA /* FireflyOrb.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -258,6 +261,7 @@
 							3BD1F61D2AF492BAF74B223B /* MarkdownText.swift in Sources */,
 							B7573AF4DD91893BF198D03E /* ConversationView.swift in Sources */,
 							E752F52AF59ED1E73EB8BB87 /* WindowManager.swift in Sources */,
+							86AF38101A0B9AD79654DC44 /* FireflyOrb.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
