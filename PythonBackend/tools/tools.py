@@ -1,5 +1,5 @@
 import inspect
-import subprocess
+import shlex
 from search import search_web as _search_web
 import re
 from .macbridge import call
@@ -17,19 +17,33 @@ from .notion_service import NotionService
 # Tool functions
 # ------------------------
 
+# open_app/close_app used to shell out from this Python process directly,
+# which always acted in the login Jugnu itself runs in -- ignoring
+# set_target_session -- and close_app interpolated the name into
+# AppleScript unescaped, so any name containing a quote broke the script.
+# Both now go through MacBridge, in whichever session is active.
+
+def _applescript_string(text: str) -> str:
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def open_app(app_name: str) -> str:
     """Opens an application on the Mac."""
-    result = subprocess.run(["open", "-a", app_name], capture_output=True, text=True)
-    return f"Opened {app_name}" if result.returncode == 0 else f"App not found: {app_name}"
+    result = call("/shell/run", {"command": f"open -a {shlex.quote(app_name)}", "timeout": 30},
+                  timeout=45)
+    if result.get("ok") and result.get("exitCode") == 0:
+        return f"Opened {app_name}"
+    detail = (result.get("stderr") or result.get("error") or "").strip()
+    return f"App not found: {app_name}" + (f" ({detail})" if detail else "")
 
 
 def close_app(app_name: str) -> str:
     """Closes an application on the Mac."""
-    result = subprocess.run(
-        ["osascript", "-e", f'quit app "{app_name}"'],
-        capture_output=True, text=True,
-    )
-    return f"Closed {app_name}" if result.returncode == 0 else f"Could not close: {app_name}"
+    result = call("/applescript/run", {"script": f"quit app {_applescript_string(app_name)}"},
+                  timeout=60)
+    if result.get("ok"):
+        return f"Closed {app_name}"
+    return f"Could not close: {app_name} ({result.get('error', 'unknown error')})"
 
 
 def play_song(song: str, artist: str = "") -> dict:
@@ -219,6 +233,13 @@ def search_web(query: str) -> str:
 
 def ask_user(question: str) -> str:
     """Ask the human a clarifying question and return their reply."""
+    import sys
+    if not sys.stdin.isatty():
+        # Under bridge.py, stdin is the Swift app's JSON protocol pipe --
+        # input() here would swallow the user's next request as the
+        # "answer". Only the CLI REPL (main.py) has a human on stdin.
+        return {"ok": False, "error": "Can't ask interactively here. Stop and put the "
+                                      "question in your final answer instead."}
     answer = input(f"\n🤔 Jugnu asks: {question}\nYou: ").strip()
     return answer
 
@@ -527,46 +548,27 @@ def applescript_run(script: str) -> dict:
 
 # -------------------------------------------------------------------- Shell
 #
-# Default: the user watches it happen. shell_stage opens a real Terminal
-# window, visibly writes the command into it, and — since auto_run defaults
-# to True — presses Return for you. Nothing about running a command is
-# hidden: the window, the typing, and the execution are all on screen.
+# Which of these the model should prefer is decided by memory.py's
+# QUIET_MODE (JUGNU_QUIET_MODE, on by default), and the automation agent's
+# TOOL_RULES say so explicitly. The docstrings below only describe what each
+# tool does -- they used to also insist "shell_stage is the default, shell_run
+# is the exception", which directly contradicted the quiet-mode prompt the
+# same model was reading, so it flip-flopped between the two.
 #
-#   shell_stage / shell_stage_script  → opens a Terminal window, writes the
-#     command in, and (auto_run=True, the default) runs it for real a
-#     moment later — all of it visible in a real Terminal window. This is
-#     the default tool any time the user asks you to run/execute something,
-#     or any time you're doing real work on their behalf: installs, builds,
-#     git, deletions, config changes, restarts, anything touching files
-#     outside a scratch dir. Pass auto_run=False only when a command is
-#     risky/ambiguous enough that you specifically want the user to read it
-#     and press Return themselves before it runs, rather than just watch it
-#     run.
-#
-#   shell_run / shell_run_script      → silent and immediate: no Terminal
-#     window, no visible typing, just stdout/stderr/exit code back to you.
-#     Reserve this narrowly, for side-effect-free lookups whose output you
-#     need to keep reasoning (checking a version, listing a directory,
-#     `df -h`, etc.) and that the user has no particular reason to watch.
-#     If the user asked you to run something, or the command changes
-#     anything, use shell_stage instead so it happens on screen.
-#
-#   shell_spawn / shell_job_status / shell_job_kill / shell_jobs → same
-#     "silent" trust level as shell_run, but detached — for anything that
-#     outlives one call (dev servers, watchers, long builds, downloads).
-#     Returns a jobId immediately instead of blocking.
-#
-# When in doubt, stage it visibly.
+#   shell_run / shell_run_script  -> silent: no Terminal window, returns
+#     stdout/stderr/exit code.
+#   shell_stage / shell_stage_script -> visible: opens a Terminal window,
+#     types the command, and (auto_run=True) runs it. No output comes back.
+#   shell_spawn + shell_job_* -> detached background jobs.
 
 def shell_stage(command: str, cwd: Optional[str] = None, auto_run: bool = True) -> dict:
     """Open a new Terminal window and visibly write `command` into it —
     the user can watch it appear. By default (auto_run=True) it also
     presses Return a moment later so the command actually runs, all of it
-    happening on screen in a real Terminal window. This is the default way
-    to run anything: whenever the user asks you to run/execute a command,
-    or you're doing something that changes or deletes files, installs or
-    updates software, changes system settings, or otherwise isn't a plain
-    read, use this instead of shell_run so it's visible.
+    happening on screen in a real Terminal window. Use it when the user
+    wants to watch a command run, or should review one before it runs
+    (auto_run=False). It takes over the screen, and returns no output --
+    shell_run is the silent alternative that returns stdout/stderr/exit code.
 
     This tool gives you no reliable feedback of its own about whether the
     command actually succeeded — a truthful "ok" only means the paste
@@ -704,13 +706,11 @@ def shell_run(
     stdin: Optional[str] = None,
 ) -> dict:
     """Run a shell command immediately and return its stdout/stderr/exit
-    code — silently, with no visible Terminal window. This is the
-    exception, not the default: reach for it only for side-effect-free
-    reads you need the output from to keep reasoning (checking a version,
-    listing a directory) and that the user has no reason to watch. If the
-    user asked you to run something, or the command changes/deletes/
-    installs/configures anything, use shell_stage instead so it happens
-    visibly in a real Terminal window.
+    code — silently, with no visible Terminal window, so it doesn't
+    interrupt whatever the user is doing. Works for any command, including
+    ones that change things; it's also the only way to get real output and
+    exit codes back. Use shell_stage instead when the user wants to watch
+    it happen in Terminal.
 
     Not for a command that doesn't terminate on its own — an animation,
     an endless stream, a dev server, a watcher. This call blocks until
@@ -754,9 +754,7 @@ def shell_run_script(
 ) -> dict:
     """Run an executable script file immediately and return its
     stdout/stderr/exit code — silently, with no visible Terminal window.
-    Prefer shell_stage_script instead so the user can watch it run; reach
-    for this only for side-effect-free scripts whose output you need back
-    for your own reasoning.
+    Use shell_stage_script instead when the user wants to watch it run.
 
     Same caveat as shell_run: not for a script that doesn't terminate on
     its own. Use shell_spawn for anything meant to keep running.

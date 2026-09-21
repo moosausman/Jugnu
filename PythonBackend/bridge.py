@@ -171,8 +171,19 @@ def log(message: str) -> None:
     print(f"[bridge] {message}", file=sys.stderr, flush=True)
 
 
+# The proactive watcher and daily-review scheduler emit from their own
+# threads while the main loop may be emitting a turn's events. print() is
+# not atomic across threads -- the payload and its newline are separate
+# writes -- so two events could interleave into one unparseable line that
+# the Swift side silently drops.
+_emit_lock = threading.Lock()
+
+
 def emit(payload: dict) -> None:
-    print(json.dumps(payload), flush=True)
+    line = json.dumps(payload)
+    with _emit_lock:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
 
 
 def visible_history(conversation: list) -> list:

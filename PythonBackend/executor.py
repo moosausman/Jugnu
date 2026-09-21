@@ -111,12 +111,16 @@ def run_task(
     # it -- exactly the failure mode this is meant to remove.
     succeeded = bool(result.steps) and not result.exhausted and not result.last_failed
 
-    if known:
-        # Whether the recalled route held up. A skill that stops working
-        # gets retired automatically rather than being suggested forever.
-        skills.feedback(known["id"], worked=succeeded)
     if succeeded:
+        # record() already bumps `successes` on the matching stored skill
+        # (and refreshes its steps). Calling feedback(worked=True) as well
+        # counted every successful reuse twice, inflating success rates so
+        # a degrading skill took twice as long to be retired.
         skills.record(task.description, task.agent, result.steps, succeeded=True)
+    elif known:
+        # The recalled route didn't hold up. A skill that stops working
+        # gets retired automatically rather than being suggested forever.
+        skills.feedback(known["id"], worked=False)
 
     return result.content
 

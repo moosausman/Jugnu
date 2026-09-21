@@ -65,9 +65,14 @@ def run_turn(
       on_tool_result(task, name, args, res) -- right after
     """
     conversation.append({"role": "user", "content": user_text})
-    smem.record_event("user_message", user_text)
 
+    # Context first, THEN log the message. Logging first let recall() find
+    # this very message and inject it as "Possibly relevant things from
+    # before" -- so every task agent saw the whole request, not just its
+    # own task, and redid other tasks' work (e.g. task 1 of "open X, then
+    # check volume" also checked the volume, then task 2 did it again).
     full_context = build_context(conversation[:-1], user_text)
+    smem.record_event("user_message", user_text)
     plan = make_plan(user_text, recent_context=full_context)
 
     if on_plan and not plan.needs_clarification:
