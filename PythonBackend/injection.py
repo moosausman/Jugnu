@@ -62,6 +62,7 @@ TRUSTED_OUTPUT_TOOLS = {
     "automation_permissions", "keyboard_type", "keyboard_press", "keyboard_sequence",
     "keyboard_activate_app", "open_app", "close_app", "notifications_send", "clipboard_set",
     "spotify_control", "spotify_now_playing", "play_song", "spotify_play_uri",
+    "play_artist", "play_album", "play_playlist",
     "file_write", "file_append", "file_touch", "file_mkdir", "file_move", "file_copy",
     "file_duplicate", "file_trash", "file_delete", "file_restore_from_trash", "file_chmod",
     "file_lock", "file_unlock", "file_zip", "file_unzip", "shell_jobs", "shell_job_kill",

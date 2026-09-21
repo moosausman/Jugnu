@@ -53,67 +53,117 @@ def close_app(app_name: str) -> str:
     return f"Could not close: {app_name} ({result.get('error', 'unknown error')})"
 
 
-def play_song(song: str, artist: str = "") -> dict:
-    """Plays a specific song on Spotify, and confirms it actually started.
-
-    Resolves the name to a real Spotify track, plays it, then reads
-    Spotify's own player state back to verify. Reports the track that is
-    genuinely playing, which may differ slightly from what was asked for
-    (a remaster, a live version) -- say which one if it differs.
-
-    Args:
-        song: The song title, e.g. "Blinding Lights".
-        artist: Optional artist name. Worth giving when the title is
-            common -- it makes the match far more accurate.
-    """
-    from .spotify_service import resolve_track, SpotifyNotConfigured
+def _play_resolved(kind: str, name: str, artist: str, resolve) -> dict:
+    """Resolve a name to a Spotify URI, play it in the background, verify,
+    and remember the match so the same request is instant next time."""
+    from .spotify_service import SpotifyLookupError, remember_uri
 
     try:
-        track = resolve_track(song, artist)
-    except SpotifyNotConfigured as e:
-        return {"ok": False, "error": str(e), "needsSetup": "spotify_credentials"}
+        item = resolve()
+    except SpotifyLookupError as e:
+        return {"ok": False, "error": str(e)}
     except LookupError as e:
         return {"ok": False, "error": str(e)}
     except Exception as e:
         return {"ok": False, "error": f"Couldn't search Spotify: {e}"}
 
-    result = call("/spotify/play-uri", {"uri": track["uri"]}, timeout=30)
+    # Cold-starting Spotify (launched hidden) can take ~20s before it plays.
+    result = call("/spotify/play-uri", {"uri": item["uri"]}, timeout=75)
     if result.get("ok"):
-        result["requested"] = {"song": song, "artist": artist}
-        result["resolved"] = {"name": track["name"], "artist": track["artist"],
-                              "album": track["album"]}
+        remember_uri(kind, name, artist, item)
+        result["requested"] = {kind: name, "artist": artist} if artist else {kind: name}
+        result["resolved"] = {"name": item.get("name", ""), "artist": item.get("artist", ""),
+                              "uri": item["uri"], "found_via": item.get("source", "")}
+        # The model used to "check" by focusing Spotify's window afterwards,
+        # which is exactly the screen takeover background playback avoids.
+        result["next"] = ("Done -- it's playing in the background and verified. Don't open, focus or "
+                          "activate Spotify; just tell the user what's playing.")
     return result
 
 
-def spotify_search(query: str, limit: int = 5) -> dict:
-    """Searches Spotify's catalogue and returns matching tracks with their URIs.
+def play_song(song: str, artist: str = "") -> dict:
+    """Plays a song on Spotify in the background -- Spotify is never brought
+    to the front (it's started hidden if it isn't running) -- and confirms
+    it's actually playing by reading Spotify's player state back.
 
-    Read-only -- nothing plays. Use this when the request is ambiguous and
-    you want to report the options, or to find a URI for spotify_play_uri.
+    Just call this directly for any "play <song>" request. Don't open or
+    activate Spotify first. Reports the track that's genuinely playing, which
+    may differ slightly from what was asked for (a remaster, a live version).
 
     Args:
-        query: Free text, e.g. "weeknd blinding lights". Field filters work
-            too: 'track:"Hello" artist:"Adele"'.
-        limit: How many results to return, 1-20. Defaults to 5.
+        song: The song title, e.g. "Blinding Lights".
+        artist: The artist, when known -- it makes the match more accurate,
+            e.g. "The Weeknd". Leave empty if unknown.
     """
-    from .spotify_service import search_tracks, SpotifyNotConfigured
+    from .spotify_service import resolve_track
+    return _play_resolved("track", song, artist, lambda: resolve_track(song, artist))
+
+
+def play_artist(artist: str) -> dict:
+    """Plays an artist on Spotify ("play some Drake") in the background --
+    their popular tracks -- and confirms playback started.
+
+    Args:
+        artist: The artist's name, e.g. "Drake".
+    """
+    from .spotify_service import resolve_artist
+    return _play_resolved("artist", artist, "", lambda: resolve_artist(artist))
+
+
+def play_album(album: str, artist: str = "") -> dict:
+    """Plays an album on Spotify in the background and confirms playback started.
+
+    Args:
+        album: The album title, e.g. "After Hours".
+        artist: The artist, when known -- it makes the match more accurate.
+    """
+    from .spotify_service import resolve_album
+    return _play_resolved("album", album, artist, lambda: resolve_album(album, artist))
+
+
+def play_playlist(playlist: str) -> dict:
+    """Plays a public Spotify playlist by name in the background, e.g.
+    "lofi beats" or "Today's Top Hits", and confirms playback started. For
+    one of the user's own private playlists, ask for its Spotify link and
+    use spotify_play_uri.
+
+    Args:
+        playlist: The playlist's name or a description of it, e.g. "chill study music".
+    """
+    from .spotify_service import resolve_playlist
+    return _play_resolved("playlist", playlist, "", lambda: resolve_playlist(playlist))
+
+
+def spotify_search(query: str, kind: str = "track", limit: int = 5) -> dict:
+    """Searches Spotify and returns matches with their URIs. Read-only --
+    nothing plays. Use it when a request is ambiguous and you want to show
+    the options; for a plain "play X", call play_song directly.
+
+    Args:
+        query: Free text, e.g. "weeknd blinding lights".
+        kind: "track", "artist", "album" or "playlist".
+        limit: How many results to return, 1-20.
+    """
+    from .spotify_service import search_spotify, search_tracks, SpotifyLookupError
+    if kind not in ("track", "artist", "album", "playlist"):
+        return {"ok": False, "error": "kind must be track, artist, album or playlist"}
     try:
-        return {"ok": True, "results": search_tracks(query, limit)}
-    except SpotifyNotConfigured as e:
-        return {"ok": False, "error": str(e), "needsSetup": "spotify_credentials"}
-    except Exception as e:
-        return {"ok": False, "error": f"Couldn't search Spotify: {e}"}
+        results = search_spotify(query, kind, max(1, min(int(limit), 20)))
+    except SpotifyLookupError:
+        results = search_tracks(query, limit) if kind == "track" else []
+    return {"ok": True, "kind": kind, "results": results}
 
 
 def spotify_play_uri(uri: str) -> dict:
-    """Plays an exact Spotify URI (track, album, or playlist) and verifies it started.
+    """Plays an exact Spotify URI or link (track, album, artist or playlist)
+    in the background and verifies it started. Accepts both
+    "spotify:track:<id>" and "https://open.spotify.com/track/<id>" forms.
 
     Args:
-        uri: A real Spotify URI, e.g. "spotify:track:0VjIjW4GlUZAMYd2vXMi3b".
-            Note that "spotify:search:..." is NOT playable -- use play_song
-            or spotify_search to resolve a name to a real URI first.
+        uri: A Spotify URI or open.spotify.com link. "spotify:search:..." is
+            NOT playable -- use play_song / spotify_search for names.
     """
-    return call("/spotify/play-uri", {"uri": uri}, timeout=30)
+    return call("/spotify/play-uri", {"uri": uri}, timeout=75)
 
 
 def spotify_now_playing() -> dict:
@@ -2428,6 +2478,9 @@ _tool_functions = [
     open_app,
     close_app,
     play_song,
+    play_artist,
+    play_album,
+    play_playlist,
     spotify_search,
     spotify_play_uri,
     spotify_now_playing,

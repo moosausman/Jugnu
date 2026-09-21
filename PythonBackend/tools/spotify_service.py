@@ -282,6 +282,218 @@ def _search_tracks_via_scrape(query: str, limit: int) -> list[dict]:
     return results
 
 
+# ───────────── Path 3: open music databases (no keys, no scraping) ───────
+#
+# Wikidata records Spotify IDs for millions of recordings (P2207), artists
+# (P1902) and albums (P2205), behind a public, documented API that doesn't
+# rate-limit or CAPTCHA scripted use the way search engines do. Apple's
+# iTunes Search API (also public, keyless) turns a loose request -- "that
+# weeknd song blinding" -- into a canonical title and artist first. Spotify's
+# own oEmbed endpoint then confirms the chosen ID really is that title.
+#
+# This path is why play_song works again without any setup: the earlier
+# search-engine scrape broke whenever DuckDuckGo was unreachable or
+# rate-limited (it is, on some networks, entirely).
+
+_WD_API = "https://www.wikidata.org/w/api.php"
+_ITUNES = "https://itunes.apple.com/search"
+_OEMBED = "https://open.spotify.com/oembed"
+_API_HEADERS = {"User-Agent": "Jugnu/1.0 (personal macOS assistant; https://github.com/) python-requests"}
+_PROPS = {"track": "P2207", "artist": "P1902", "album": "P2205"}  # playlists aren't in Wikidata
+
+_CACHE_LOCK = threading.Lock()
+
+
+def _cache_path():
+    try:
+        from memory import APP_SUPPORT_DIR
+        return APP_SUPPORT_DIR / "spotify_cache.json"
+    except Exception:
+        return None
+
+
+def _norm(text: str) -> str:
+    text = (text or "").lower()
+    text = re.sub(r"\(.*?\)|\[.*?\]", " ", text)             # (Remastered), [Live]
+    text = re.sub(r"\b(feat|ft|featuring)\b.*$", " ", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _cache_key(kind: str, name: str, artist: str = "") -> str:
+    return f"{kind}|{_norm(name)}|{_norm(artist)}"
+
+
+def _cache_get(key: str) -> dict | None:
+    path = _cache_path()
+    if not path or not path.exists():
+        return None
+    with _CACHE_LOCK:
+        try:
+            return json.loads(path.read_text() or "{}").get(key)
+        except (OSError, json.JSONDecodeError):
+            return None
+
+
+def _cache_put(key: str, value: dict) -> None:
+    path = _cache_path()
+    if not path:
+        return
+    with _CACHE_LOCK:
+        try:
+            data = json.loads(path.read_text() or "{}") if path.exists() else {}
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        data[key] = value
+        if len(data) > 2000:  # keep the most recent entries
+            data = dict(list(data.items())[-1500:])
+        try:
+            path.write_text(json.dumps(data))
+        except OSError:
+            pass
+
+
+def _similar(a: str, b: str) -> float:
+    """0..1 token-overlap similarity of two normalized names."""
+    ta, tb = set(_norm(a).split()), set(_norm(b).split())
+    if not ta or not tb:
+        return 0.0
+    if _norm(a) == _norm(b):
+        return 1.0
+    return len(ta & tb) / max(len(ta), len(tb))
+
+
+_SPARQL = "https://query.wikidata.org/sparql"
+
+
+def _sparql(query: str) -> list[dict]:
+    """One SPARQL request, honouring Wikimedia's Retry-After once."""
+    for attempt in range(2):
+        resp = requests.get(_SPARQL, params={"query": query, "format": "json"},
+                            headers={**_API_HEADERS, "Accept": "application/sparql-results+json"}, timeout=6)
+        if resp.status_code == 429 and attempt == 0:
+            wait = resp.headers.get("retry-after", "3")
+            time.sleep(min(float(wait) if wait.replace(".", "").isdigit() else 3.0, 6.0))
+            continue
+        resp.raise_for_status()
+        return resp.json().get("results", {}).get("bindings", [])
+    return []
+
+
+def _sparql_text(text: str) -> str:
+    return text.replace("\\", " ").replace('"', " ").strip()
+
+
+def _wd_candidates(kind: str, name: str) -> list[dict]:
+    """Search + Spotify ID + performer names in a single request (Wikidata's
+    SPARQL endpoint calls the search API itself), so one lookup costs one
+    HTTP round trip instead of three."""
+    prop = _PROPS[kind]
+    performer = "" if kind == "artist" else """
+      OPTIONAL { ?item wdt:P175 ?perf . ?perf rdfs:label ?perfLabel . FILTER(LANG(?perfLabel) = "en") }"""
+    query = f"""
+    SELECT ?item ?label ?sid ?perfLabel WHERE {{
+      SERVICE wikibase:mwapi {{
+        bd:serviceParam wikibase:endpoint "www.wikidata.org"; wikibase:api "Search";
+                        mwapi:srsearch "{_sparql_text(name)} haswbstatement:{prop}"; mwapi:srlimit "10" .
+        ?item wikibase:apiOutputItem mwapi:title .
+      }}
+      ?item wdt:{prop} ?sid .
+      OPTIONAL {{ ?item rdfs:label ?label . FILTER(LANG(?label) = "en") }}{performer}
+    }} LIMIT 60"""
+    rows: dict[str, dict] = {}
+    for b in _sparql(query):
+        qid = b["item"]["value"].rsplit("/", 1)[-1]
+        row = rows.setdefault(qid, {"label": b.get("label", {}).get("value", ""), "ids": [], "performers": []})
+        sid = b["sid"]["value"]
+        if sid not in row["ids"]:
+            row["ids"].append(sid)
+        perf = b.get("perfLabel", {}).get("value")
+        if perf and perf not in row["performers"]:
+            row["performers"].append(perf)
+    return list(rows.values())
+
+
+def _oembed_title(kind: str, spotify_id: str) -> str | None:
+    try:
+        resp = requests.get(_OEMBED, params={"url": f"https://open.spotify.com/{kind}/{spotify_id}"},
+                            headers=_API_HEADERS, timeout=8)
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("title")
+    except (requests.RequestException, ValueError):
+        return None
+
+
+def _itunes_candidates(term: str, entity: str = "song", limit: int = 3) -> list[dict]:
+    try:
+        resp = requests.get(_ITUNES, params={"term": term, "entity": entity, "limit": limit},
+                            headers=_API_HEADERS, timeout=8)
+        resp.raise_for_status()
+        return resp.json().get("results", [])
+    except (requests.RequestException, ValueError):
+        return []
+
+
+def _wd_resolve(kind: str, name: str, artist: str = "") -> dict | None:
+    """Best Wikidata match for a track / artist / album, verified against
+    Spotify's own oEmbed title. None if nothing convincing is found."""
+    scored = []
+    for row in _wd_candidates(kind, name):
+        name_score = _similar(name, row["label"]) if row["label"] else 0.0
+        if name_score < 0.6:
+            continue
+        if artist and kind != "artist":
+            artist_score = max((_similar(artist, p) for p in row["performers"]), default=0.0)
+            if artist_score < 0.5:
+                continue
+        else:
+            artist_score = 0.5
+        scored.append((name_score + artist_score, row))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    for _, row in scored[:3]:
+        for sid in row["ids"][:3]:
+            title = _oembed_title(kind, sid)
+            if title is None:
+                continue  # removed from Spotify or unavailable in this region
+            if _similar(title, name) >= 0.5 or _similar(title, row["label"]) >= 0.5:
+                return {"uri": f"spotify:{kind}:{sid}", "name": title,
+                        "artist": row["performers"][0] if row["performers"] else (artist or ""),
+                        "album": "", "source": "wikidata"}
+    return None
+
+
+def _open_database_resolve(kind: str, name: str, artist: str = "") -> dict | None:
+    """Wikidata directly, then again with Apple's canonical title/artist when
+    the request was loose ("blinding lights weeknd", a typo, no artist)."""
+    try:
+        hit = _wd_resolve(kind, name, artist)
+        if hit:
+            return hit
+    except requests.RequestException:
+        return None  # slow or throttled -- a second round would only be slower
+    try:
+        if kind == "artist":
+            for c in _itunes_candidates(name, entity="musicArtist", limit=2):
+                hit = _wd_resolve("artist", c.get("artistName", ""))
+                if hit:
+                    return hit
+            return None
+        entity = "song" if kind == "track" else "album"
+        field = "trackName" if kind == "track" else "collectionName"
+        for c in _itunes_candidates(f"{name} {artist}".strip(), entity=entity, limit=3):
+            canonical, canon_artist = c.get(field, ""), c.get("artistName", "")
+            if not canonical or (artist and _similar(artist, canon_artist) < 0.5):
+                continue
+            hit = _wd_resolve(kind, canonical, canon_artist)
+            if hit:
+                return hit
+    except requests.RequestException:
+        return None
+    return None
+
+
 # ──────────────────────────────── Public API ─────────────────────────────
 
 def search_tracks(query: str, limit: int = 5) -> list[dict]:
@@ -301,7 +513,21 @@ def search_tracks(query: str, limit: int = 5) -> list[dict]:
         except Exception:
             pass  # network hiccup etc. -- fall through to the free path below
 
-    return _search_tracks_via_scrape(query, limit)
+    try:
+        results = search_spotify(query, "track", limit)
+        if results:
+            return results
+    except SpotifyLookupError:
+        pass
+    hit = _open_database_resolve("track", query)
+    results = [hit] if hit else []
+    try:
+        for r in _search_tracks_via_scrape(query, limit):
+            if all(r["uri"] != x["uri"] for x in results):
+                results.append(r)
+    except SpotifyLookupError:
+        pass  # search engine unreachable -- the open-database result stands on its own
+    return results[:limit]
 
 
 def resolve_track(song: str, artist: str = "") -> dict:
@@ -318,21 +544,144 @@ def resolve_track(song: str, artist: str = "") -> dict:
     if not song:
         raise ValueError("song is required")
     artist = (artist or "").strip()
+    return _resolve("track", song, artist)
 
-    attempts = []
-    if artist and _has_credentials():
-        attempts.append(f'track:"{song}" artist:"{artist}"')
-    if artist:
-        attempts.append(f"{song} {artist}")
-    attempts.append(song)
 
-    for query in attempts:
-        results = search_tracks(query, limit=5)
-        if results:
-            return results[0]
+def resolve_artist(artist: str) -> dict:
+    """Spotify URI for an artist ("play some Drake")."""
+    artist = (artist or "").strip()
+    if not artist:
+        raise ValueError("artist is required")
+    return _resolve("artist", artist)
+
+
+def resolve_playlist(name: str) -> dict:
+    """Spotify URI for a public playlist by name ("lofi beats", "Today's Top Hits")."""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("playlist name is required")
+    return _resolve("playlist", name)
+
+
+def resolve_album(album: str, artist: str = "") -> dict:
+    """Spotify URI for an album."""
+    album = (album or "").strip()
+    if not album:
+        raise ValueError("album is required")
+    return _resolve("album", album, (artist or "").strip())
+
+
+def remember_uri(kind: str, name: str, artist: str, result: dict) -> None:
+    """Called after a verified play, so the same request is instant next
+    time and works even offline."""
+    _cache_put(_cache_key(kind, name, artist), {k: result.get(k, "") for k in ("uri", "name", "artist", "album")})
+
+
+# ───────── Path 0 (primary): Spotify's own search, via MacBridge ─────────
+#
+# MacBridge loads open.spotify.com/search off-screen and reads the results
+# (see MacBridge's SpotifySearch.swift): Spotify's own ranking, no key, no
+# third-party service, ~1.5s. Everything below it is a fallback.
+
+_WEB_TYPES = {"track": "tracks", "artist": "artists", "album": "albums", "playlist": "playlists"}
+
+
+def search_spotify(query: str, kind: str = "track", limit: int = 5) -> list[dict]:
+    """Spotify's own search results for `query` (tracks, artists, albums or
+    playlists). Raises SpotifyLookupError if the search couldn't run."""
+    from tools.macbridge import call
+    try:
+        r = call("/spotify/search", {"query": query, "type": _WEB_TYPES[kind], "limit": limit}, timeout=30)
+    except Exception as e:
+        raise SpotifyLookupError(f"Spotify search unavailable: {e}") from e
+    if not r.get("ok"):
+        if "returned no" in str(r.get("error", "")):
+            return []
+        raise SpotifyLookupError(str(r.get("error") or "Spotify search failed"))
+    return [{"uri": x["uri"], "name": x.get("name", ""), "artist": x.get("artist", ""), "album": ""}
+            for x in r.get("results", [])]
+
+
+def pick_best(results: list[dict], name: str, artist: str = "", kind: str = "track") -> dict | None:
+    """Spotify's top result, unless a lower one matches the requested title
+    and artist clearly better (e.g. the original over a remix or a cover)."""
+    if not results:
+        return None
+    wanted = _norm(name)
+
+    def full(text: str) -> str:  # like _norm, but keeps "(Remix)", "[Live]" etc.
+        return " ".join(re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).split())
+
+    def score(i_r):
+        i, r = i_r
+        title = _norm(r.get("name", ""))
+        s = 0.0
+        exact = title == wanted or full(r.get("name", "")) == full(name)
+        overlap = max(_similar(name, r.get("name", "")),
+                      len(set(full(name).split()) & set(full(r.get("name", "")).split()))
+                      / max(len(set(full(name).split())), len(set(full(r.get("name", "")).split())), 1))
+        s += 3.0 if exact else 1.5 * overlap
+        if full(r.get("name", "")) == full(name):
+            s += 0.5   # "After Hours" over "After Hours (Deluxe)" unless the deluxe was asked for
+        if artist:
+            s += 2.0 * max((_similar(artist, a) for a in r.get("artist", "").split(",")), default=0.0)
+        if kind == "track" and re.search(r"\b(remix|live|karaoke|instrumental|cover|sped up|slowed|8d)\b",
+                                         r.get("name", ""), re.I) and not re.search(
+                                             r"\b(remix|live|karaoke|instrumental|cover|sped up|slowed)\b", name, re.I):
+            s -= 1.0
+        return s - 0.15 * i   # keep Spotify's ranking as the tie-breaker
+    best_i, best = max(enumerate(results), key=score)
+    if artist and max((_similar(artist, a) for a in best.get("artist", "").split(",")), default=0.0) < 0.34 \
+            and kind != "artist":
+        # Nothing by that artist in the results -- don't silently play someone else.
+        return None
+    return best
+
+
+def _resolve(kind: str, name: str, artist: str = "") -> dict:
+    cached = _cache_get(_cache_key(kind, name, artist))
+    if cached and cached.get("uri"):
+        return {**cached, "source": "cache"}
+
+    query = f"{name} {artist}".strip() if kind != "artist" else name
+    try:
+        best = pick_best(search_spotify(query, kind, limit=8), name, artist, kind)
+        if best is None and artist and kind != "artist":
+            best = pick_best(search_spotify(name, kind, limit=8), name, artist, kind)
+        if best:
+            return {**best, "source": "spotify_search"}
+    except SpotifyLookupError:
+        pass  # MacBridge or open.spotify.com unreachable -- try the fallbacks
+
+    if kind == "track" and _has_credentials():
+        attempts = [f'track:"{name}" artist:"{artist}"'] if artist else []
+        attempts.append(f"{name} {artist}".strip())
+        for query in attempts:
+            try:
+                results = _search_tracks_via_api(query, 5)
+            except SpotifyLookupError:
+                raise
+            except Exception:
+                results = []
+            if results:
+                return {**results[0], "source": "spotify_api"}
+
+    if kind in _PROPS:
+        hit = _open_database_resolve(kind, name, artist)
+        if hit:
+            return hit
+
+    if kind == "track":
+        for query in ([f"{name} {artist}"] if artist else []) + [name]:
+            try:
+                results = _search_tracks_via_scrape(query, 5)
+            except SpotifyLookupError:
+                break  # search engine unreachable
+            if results:
+                return {**results[0], "source": "web_search"}
 
     raise LookupError(
-        f"Spotify has no track matching {song!r}"
+        f"Couldn't find a Spotify {kind} matching {name!r}"
         + (f" by {artist!r}" if artist else "")
-        + ". Check the spelling, or try without the artist."
+        + ". Check the spelling, add the artist, or give a Spotify link."
     )

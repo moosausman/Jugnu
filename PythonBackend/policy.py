@@ -95,6 +95,8 @@ TOOL_POLICIES: dict[str, ToolPolicy] = {
     # apps & media
     "open_app": ToolPolicy(L, "apps"), "close_app": ToolPolicy(M, "apps", note="unsaved work may be lost"),
     "play_song": ToolPolicy(L, "media"), "spotify_search": ToolPolicy(R, "media"),
+    "play_artist": ToolPolicy(L, "media"), "play_album": ToolPolicy(L, "media"),
+    "play_playlist": ToolPolicy(L, "media"),
     "spotify_play_uri": ToolPolicy(L, "media"), "spotify_now_playing": ToolPolicy(R, "media"),
     "spotify_control": ToolPolicy(L, "media"),
     # sessions & memory & meta

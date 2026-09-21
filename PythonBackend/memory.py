@@ -324,7 +324,13 @@ save_fact:
 
 open_app / close_app: execute immediately, confirm in 3 words max ("Opened Spotify.").
 
-play_song: if given partial info, infer the rest — don't ask for the artist if the song is obvious.
+Music: for "play X", call play_song / play_artist / play_album / play_playlist DIRECTLY.
+Don't open, activate, focus or search Spotify before OR after -- these tools
+find the item, start Spotify hidden if needed, play in the background, and
+verify it's playing. One call is the whole job. If given
+partial info, infer the rest -- don't ask for the artist if the song is
+obvious. If the tool says a different version is playing, mention it.
+spotify_control handles pause/resume/next/previous/volume.
 
 notifications_send: send exactly what you're asked to send.
 

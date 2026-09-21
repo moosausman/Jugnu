@@ -183,7 +183,8 @@ AGENTS = {
     "system": Agent(
         name="system",
         exclusive=True,
-        role="Opens/closes apps, plays music, controls volume/sleep/lock/battery, sends "
+        role="Opens/closes apps, plays music on Spotify (songs, artists, albums, playlists -- in the "
+             "background), controls volume/sleep/lock/battery, sends "
              "notifications, manages the clipboard, reveals files in Finder, runs AppleScript "
              "and named Shortcuts.",
         # Fixed: was "notification" (no such tool -- tools.py defines
@@ -199,7 +200,7 @@ AGENTS = {
             "window_list", "window_focus", "window_arrange", "window_set_frame", "window_minimize", "window_close", "speak", "music_control", "system_info", "permissions_check",
             "open_app", "close_app", "notifications_send",
             "current_session", "set_target_session",
-            "play_song", "spotify_search", "spotify_play_uri",
+            "play_song", "play_artist", "play_album", "play_playlist", "spotify_search", "spotify_play_uri",
             "spotify_now_playing", "spotify_control",
             "clipboard_get", "clipboard_set", "finder_open", "finder_reveal",
             "shortcuts_run",
