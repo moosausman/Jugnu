@@ -16,6 +16,8 @@ struct InputBarView: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
+            AccountChip(appState: appState)
+                .padding(.bottom, 3)
             TextField(speech.isListening ? "Listening…" : "Message Jugnu", text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(Theme.text(13.5))
@@ -82,6 +84,51 @@ struct InputBarView: View {
 
 extension Notification.Name {
     static let jugnuFocusInput = Notification.Name("jugnuFocusInput")
+}
+
+/// Where the request runs: your account, the Jugnu account, or Auto.
+private struct AccountChip: View {
+    @ObservedObject var appState: AppState
+    @ObservedObject private var settings = SettingsStore.shared
+    @State private var hovering = false
+
+    private var label: String {
+        switch appState.targetAccount {
+        case "primary": return "You"
+        case "agent": return "Jugnu"
+        default: return "Auto"
+        }
+    }
+
+    private var picked: Bool { appState.targetAccount != "auto" }
+
+    var body: some View {
+        Menu {
+            Picker("Run on", selection: $appState.targetAccount) {
+                Text("Auto — \(settings.useAgentAccountByDefault ? "Jugnu account" : "your account") by default")
+                    .tag("auto")
+                Text("Your account").tag("primary")
+                Text("Jugnu account").tag("agent")
+            }
+            .pickerStyle(.inline)
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: appState.targetAccount == "agent" ? "person.crop.square.fill" : "person.crop.circle")
+                    .font(.system(size: 10.5))
+                Text(label).font(Theme.text(11, weight: .medium))
+            }
+            .foregroundStyle(picked ? Theme.clay : (hovering ? Theme.inkDim : Theme.inkFaint))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(picked ? Theme.clay.opacity(0.14) : Color.white.opacity(hovering ? 0.08 : 0.05)))
+            .contentShape(Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .help("Which Mac account this runs on")
+    }
 }
 
 private struct RoundButton: View {

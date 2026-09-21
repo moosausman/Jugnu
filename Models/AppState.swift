@@ -184,6 +184,13 @@ final class AppState: ObservableObject {
         bridge = newBridge
     }
 
+    /// Which Mac account the next requests run on: "auto" (the default from
+    /// Settings, or whatever the request itself says), "primary" (yours) or
+    /// "agent" (the Jugnu account). Stays until changed.
+    @Published var targetAccount: String = UserDefaults.standard.string(forKey: "jugnu.targetAccount") ?? "auto" {
+        didSet { UserDefaults.standard.set(targetAccount, forKey: "jugnu.targetAccount") }
+    }
+
     func send(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !thinking, !trimmed.isEmpty else { return }
@@ -193,7 +200,11 @@ final class AppState: ObservableObject {
         statusLabel = "thinking"
         errorMessage = nil
         messages.append(ChatMessage(role: .user, content: trimmed))
-        bridge?.send(OutgoingRequest(type: "send", id: id, text: trimmed))
+        var extra: [String: JSONValue] = [:]
+        if targetAccount == "primary" || targetAccount == "agent" {
+            extra["session"] = .string(targetAccount)
+        }
+        bridge?.send(OutgoingRequest(type: "send", id: id, text: trimmed, extra: extra))
     }
 
     // MARK: - Run control

@@ -364,6 +364,15 @@ def _failed(tool, args, error_type, error, risk="read", decision="allow", raw=No
                        error_type=error_type, error=error, risk=risk, decision=decision, duration=duration)
 
 
+def _in_agent_account() -> bool:
+    """Whether this call runs in the Jugnu account (the agent session)."""
+    try:
+        from tools import macbridge
+        return macbridge.active_session() == "agent"
+    except Exception:
+        return False
+
+
 def execute(tool: str, args, functions: dict, schemas_by_name: dict | None = None,
             ctx: "run_context.RunContext | None" = None) -> ToolOutcome:
     """Runs one tool call under the full policy. Never raises, except
@@ -397,7 +406,7 @@ def execute(tool: str, args, functions: dict, schemas_by_name: dict | None = Non
     task_key = (tool, assessment.capability)
     decision = policy.decide(
         assessment, user_initiated=ctx.user_initiated, tainted=ctx.tainted,
-        pre_approved=task_key in ctx.task_approvals,
+        pre_approved=task_key in ctx.task_approvals, sandboxed=_in_agent_account(),
     )
     risk = assessment.risk.label
     decision_label = "allow"

@@ -723,13 +723,36 @@ class Decision:
         return {"action": self.action, "why": self.why, **self.assessment.to_dict()}
 
 
+# The Jugnu account is a separate macOS user that exists to be Jugnu's own
+# workspace: what happens inside it doesn't touch the user's account. So work
+# that stays inside it runs without asking -- including deleting and
+# installing there. What still asks, even there: anything that reaches the
+# outside world (sending, publishing, purchases, pushing code) or the whole
+# Mac (power, admin rights, system security), and paths outside that
+# account's own folders.
+_SANDBOX_CAPABILITIES = {"files_read", "files_write", "shell", "dev", "apps", "desktop", "screen", "clipboard",
+                         "notifications", "browser", "scripting", "notes", "reminders", "calendar", "contacts"}
+_REACHES_OUTSIDE = re.compile(
+    r"git push|publish|sends?\b|email|message|purchase|\bbuy|payment|shuts the Mac|restarts the Mac|halts the Mac|"
+    r"administrator|switches user|another user|system update|security|keychain|firewall|network|power|"
+    r"login item|launchctl|world-writable|protected app|ownership|"
+    r"/Users/Shared|/Volumes/", re.I)   # shared with the user's account, or external drives
+
+
+def _stays_in_sandbox(a: Assessment) -> bool:
+    return (a.capability in _SANDBOX_CAPABILITIES and not a.protected and not a.out_of_scope
+            and not any(_REACHES_OUTSIDE.search(r or "") for r in a.reasons + [a.summary]))
+
+
 def decide(a: Assessment, *, mode: str | None = None, user_initiated: bool = True,
-           tainted: bool = False, pre_approved: bool = False) -> Decision:
+           tainted: bool = False, pre_approved: bool = False, sandboxed: bool = False) -> Decision:
     mode = mode or permissions.autonomy_mode()
     if not permissions.capability_enabled(a.capability):
         return Decision("deny", a, f"The '{a.capability}' permission is switched off in Settings → Permissions.")
     if a.risk == Risk.READ and not a.protected and not a.out_of_scope:
         return Decision("allow", a, "read-only")
+    if sandboxed and user_initiated and _stays_in_sandbox(a):
+        return Decision("allow", a, "inside the Jugnu account, Jugnu's own workspace")
     if a.risk >= Risk.HIGH:
         return Decision("confirm", a, "consequential or irreversible -- always confirmed")
     if a.protected:

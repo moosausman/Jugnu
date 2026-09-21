@@ -67,6 +67,11 @@ def _strip_spotify(obj: str) -> str:
     return re.sub(r"\s+(?:on|in|from|with) spotify$", "", obj, flags=re.I).strip()
 
 
+def _session_hint(text: str) -> Optional[str]:
+    import router
+    return router.session_hint(text)
+
+
 def parse(text: str) -> Optional[Intent]:
     """The one tool call `text` asks for, or None if it isn't obviously one."""
     t = _clean(text)
@@ -214,16 +219,21 @@ def _describe_now_playing(raw: dict) -> str:
 # Running one
 # ---------------------------------------------------------------------------
 
-def try_handle(text: str) -> Optional[str]:
+def try_handle(text: str, session: Optional[str] = None) -> Optional[str]:
     """Runs `text` without a model if it's one of the patterns above.
-    Returns the reply, or None to let the normal route take it."""
+    Returns the reply, or None to let the normal route take it.
+    `session` is the account the user picked for this request, if any
+    (music always plays in the user's own account regardless)."""
     intent = parse(text)
     if intent is None or intent.tool not in FUNCTIONS:
         return None
     ctx = run_context.current()
     macbridge.reset_session()
+    hinted = session or _session_hint(text)
     if intent.session:
         macbridge.set_active_session(intent.session)
+    elif hinted:
+        macbridge.set_active_session(hinted)
     elif not macbridge.session_available(macbridge.active_session()):
         return None  # let the normal route explain which account isn't running
 

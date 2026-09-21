@@ -323,3 +323,39 @@ class PermissionStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JugnuAccountAutonomyTests(unittest.TestCase):
+    """In the Jugnu account (Jugnu's own macOS user), work that stays inside
+    it runs without asking; anything reaching outside it still asks."""
+
+    def setUp(self):
+        permissions.save({"autonomy_mode": "balanced"})
+        from tools import macbridge
+        self.macbridge = macbridge
+        self.token = macbridge._active.set("agent")
+
+    def tearDown(self):
+        self.macbridge._active.reset(self.token)
+
+    def decide(self, tool, args, sandboxed=True):
+        return policy.decide(policy.assess(tool, args), sandboxed=sandboxed).action
+
+    def test_contained_work_runs_without_asking(self):
+        self.assertEqual(self.decide("shell_run", {"command": "rm -rf ~/scratch/build"}), "allow")
+        self.assertEqual(self.decide("shell_run", {"command": "pip3 install --user requests"}), "allow")
+        self.assertEqual(self.decide("file_delete", {"path": "/Users/jugnu/Documents/old.txt"}), "allow")
+
+    def test_outside_world_and_whole_mac_still_ask(self):
+        self.assertEqual(self.decide("shell_run", {"command": "git push origin main"}), "confirm")
+        self.assertEqual(self.decide("shell_run", {"command": "sudo shutdown -h now"}), "confirm")
+        self.assertEqual(self.decide("mail_send", {"to": "a@b.com", "subject": "s", "body": "b"}), "confirm")
+        self.assertEqual(self.decide("whatsapp_message", {"to": "Bob", "text": "hi"}), "confirm")
+        self.assertEqual(self.decide("file_delete", {"path": "/Users/Shared/notes.txt"}), "confirm")
+
+    def test_same_action_in_your_own_account_still_asks(self):
+        self.assertEqual(self.decide("shell_run", {"command": "rm -rf ~/scratch/build"}, sandboxed=False), "confirm")
+
+    def test_work_nobody_started_still_asks(self):
+        a = policy.assess("shell_run", {"command": "rm -rf ~/scratch/build"})
+        self.assertEqual(policy.decide(a, sandboxed=True, user_initiated=False).action, "confirm")

@@ -125,7 +125,7 @@ private struct GeneralPane: View {
                 ToggleRow("Work quietly", detail: "Silent commands and background tabs instead of taking over the screen.",
                           isOn: $settings.quietModeEnabled)
                 RowDivider()
-                ToggleRow("Use the Jugnu account", detail: "Do desktop work in the separate Jugnu macOS user.",
+                ToggleRow("Use the Jugnu account", detail: "The default for new requests. Pick per request next to the message box.",
                           isOn: $settings.useAgentAccountByDefault)
                 RowDivider()
                 ToggleRow("Situational awareness", detail: "Know the frontmost app and window, so “this” means something.",

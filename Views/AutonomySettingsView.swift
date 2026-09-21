@@ -44,7 +44,8 @@ struct AutonomyPane: View {
                     .foregroundStyle(Theme.inkDim)
                     .padding(.vertical, 6)
             }
-            Label("Sending, deleting for good, installing, buying and security changes always ask.",
+            Label("Sending, deleting for good, installing, buying and security changes always ask. In the "
+                  + "Jugnu account, only sending, publishing, buying and Mac-wide changes ask.",
                   systemImage: "lock.fill")
                 .font(Theme.text(11))
                 .foregroundStyle(Theme.inkFaint)
@@ -216,7 +217,7 @@ struct AutonomyPane: View {
                 .help(entries[key]?["needed_for"]?.string ?? "")
             }
             if name == "agent" {
-                Text("Grant these while logged in as the Jugnu user.")
+                Text("To grant these, log into the Jugnu account and open “Set Up Jugnu Permissions” in /Users/Shared.")
                     .font(Theme.text(11))
                     .foregroundStyle(Theme.inkFaint)
                     .padding(.vertical, 4)

@@ -83,10 +83,10 @@ def _apply_session(plan: Plan) -> Optional[str]:
     return None
 
 
-def _fast_path(user_text: str) -> Optional[str]:
+def _fast_path(user_text: str, session_choice: Optional[str] = None) -> Optional[str]:
     try:
         import fastpath
-        return fastpath.try_handle(user_text)
+        return fastpath.try_handle(user_text, session=session_choice)
     except run_context.RunCancelled:
         raise
     except Exception as e:  # a pattern miss or a bug here must never cost the turn
@@ -142,9 +142,13 @@ def run_turn(
     on_status=None,
     on_tool_call=None,
     on_tool_result=None,
+    session_override: Optional[str] = None,
 ) -> str:
     """Runs one full turn and returns the user-facing answer. `conversation`
     is mutated in place (user and assistant messages appended) and saved.
+
+    session_override -- "primary" or "agent" when the user picked the account
+    for this request in the app; it beats the default and anything inferred.
 
     Callbacks, all optional:
       on_plan(plan)                        -- once, when a real plan exists
@@ -184,7 +188,7 @@ def run_turn(
     # Safari") runs straight through, unless a paused run is waiting on an
     # answer (the message might be that answer).
     if not tasks_store.pending_question():
-        quick = _fast_path(user_text)
+        quick = _fast_path(user_text, session_override)
         if quick is not None:
             audit.log("plan", run_id=ctx.run_id, summary=f"(fast path) {user_text}", detail={"fast_path": True})
             _finish(conversation, quick)
@@ -209,8 +213,12 @@ def run_turn(
     # Explicit words beat model inference: "on the Jugnu account" / "on my
     # account" and "in the background" are honoured even when the planner
     # misses them (it has).
+    # The account the user picked in the app wins; then explicit words
+    # ("on the Jugnu account") the planner might have missed.
     hinted_session = router.session_hint(user_text)
-    if hinted_session and not plan.session:
+    if session_override in ("primary", "agent"):
+        plan.session = session_override
+    elif hinted_session and not plan.session:
         plan.session = hinted_session
     if router.wants_background(user_text) and plan.request_type in ("agentic", "quick_action") and plan.tasks:
         plan.request_type = "background"

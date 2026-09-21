@@ -16,7 +16,9 @@ llm_client.py for the full model-role split).
 Protocol -- one JSON object per line, UTF-8:
 
   Swift -> Python
-    {"type": "send",  "id": "<uuid>", "text": "..."}
+    {"type": "send",  "id": "<uuid>", "text": "...", "session": "primary" | "agent"}
+        (session optional: the account the user picked for this request;
+         absent = the default account / whatever the request itself says)
     {"type": "clear"}
     {"type": "reset_facts"}
     {"type": "reset_memory"}
@@ -209,7 +211,7 @@ def visible_history(conversation: list) -> list:
     ]
 
 
-def handle_send(conversation: list, request_id: str, text: str) -> None:
+def handle_send(conversation: list, request_id: str, text: str, session_choice: str | None = None) -> None:
     ctx = run_context.RunContext(request_id=request_id, goal=text, emit=emit, origin="user")
     run_context.register(ctx)
     token = run_context.activate(ctx)
@@ -258,6 +260,7 @@ def handle_send(conversation: list, request_id: str, text: str) -> None:
         answer = session.run_turn(
             conversation,
             text,
+            session_override=session_choice,
             on_plan=on_plan,
             on_task_start=on_task_start,
             on_status=on_status,
@@ -770,8 +773,9 @@ def main() -> None:
         if kind == "send":
             request_id = request.get("id", "")
             text = request.get("text", "")
+            choice = request.get("session") if request.get("session") in ("primary", "agent") else None
             emit({"type": "status", "id": request_id, "label": "thinking"})
-            worker.submit(lambda rid=request_id, t=text: handle_send(conv_ref.value, rid, t))
+            worker.submit(lambda rid=request_id, t=text, c=choice: handle_send(conv_ref.value, rid, t, c))
 
         elif kind == "daily_review":
             request_id = request.get("id", "")
