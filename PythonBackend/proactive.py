@@ -270,7 +270,7 @@ def consider(conversation: list, curr: "aware.Snapshot", prev: "aware.Snapshot |
 
     try:
         decision = request_json(
-            messages, role="AGENT", retries=MAX_JSON_RETRIES, validate=_validate_decision
+            messages, role="EASY", retries=MAX_JSON_RETRIES, validate=_validate_decision
         )
     except Exception as e:
         log(f"couldn't get a valid decision after retries ({e}) -- defaulting to silence")

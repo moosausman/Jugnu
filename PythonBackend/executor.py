@@ -135,7 +135,7 @@ def run_task(task, shared_memory, recent_context="", on_status=None, on_tool_cal
         if on_status:
             on_status("thinking")
         # Deep-tier answers (explanations, teaching) get the strongest model.
-        content = persona_reply(user_message, role="DEEP" if getattr(task, "model_tier", "") == "deep" else "AGENT")
+        content = persona_reply(user_message, role="DEEP" if getattr(task, "model_tier", "") == "deep" else "EASY")
         result = AgentResult(content=content, messages=[])
         return result if return_result else content
 
@@ -586,7 +586,7 @@ def _quality_control(answer: str, evidence: str, role: str) -> str | None:
         review = request_json([
             {"role": "system", "content": _QC_PROMPT},
             {"role": "user", "content": f"Results:\n{evidence[:12000]}\n\nDraft reply:\n{answer}"},
-        ], role="FAST", retries=1)
+        ], role="EASY", retries=1)
     except Exception:
         return None
     problems = [str(p) for p in (review.get("problems") or [])][:6]

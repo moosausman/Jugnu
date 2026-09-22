@@ -199,9 +199,85 @@ class UsageTests(unittest.TestCase):
         try:
             llm_client._record_usage(1200, 40)
             llm_client._record_usage(800, 10)
+            llm_client._record_usage(500, 20, local=True)
         finally:
             run_context.deactivate(token)
-        self.assertEqual(ctx.usage, {"calls": 2, "prompt_tokens": 2000, "completion_tokens": 50})
+        self.assertEqual(ctx.usage, {"calls": 2, "prompt_tokens": 2000, "completion_tokens": 50, "local_calls": 1})
+
+
+class ModelModeTests(unittest.TestCase):
+    def setUp(self):
+        import llm_client
+        self.llm_client = llm_client
+        self._mode = llm_client._mode
+
+    def tearDown(self):
+        self.llm_client._mode = self._mode
+
+    def test_modes_route_roles(self):
+        c = self.llm_client
+        c.set_mode("api")
+        self.assertEqual({c._provider_for(r) for r in ("PLANNER", "AGENT", "FAST", "DEEP", "EASY")}, {"api"})
+        c.set_mode("local")
+        self.assertEqual({c._provider_for(r) for r in ("PLANNER", "AGENT", "FAST", "DEEP", "EASY")}, {"local"})
+        c.set_mode("hybrid")
+        self.assertEqual(c._provider_for("EASY"), "local")
+        self.assertEqual(c._provider_for("PLANNER"), "api")
+        self.assertEqual(c._provider_for("FAST"), "api")
+        with self.assertRaises(ValueError):
+            c.set_mode("cloud")
+
+    def test_hybrid_falls_back_to_the_api_when_ollama_is_down(self):
+        import os
+        c = self.llm_client
+        c.set_mode("hybrid")
+        orig_chat, orig_api = c.ollama.chat, c._api_chat
+        env = {k: os.environ.get(k) for k in ("JUGNU_API_BASE_URL", "JUGNU_API_KEY")}
+        os.environ.update({"JUGNU_API_BASE_URL": "http://127.0.0.1:9", "JUGNU_API_KEY": "k"})
+        used = []
+
+        def down(**kwargs):
+            raise ConnectionError("ollama not running")
+        c.ollama.chat = down
+        c._api_chat = lambda messages, tools=None, role="AGENT": used.append(role) or c.ChatResponse(
+            c.Message("assistant", "from the api"))
+        try:
+            reply = c.chat([{"role": "user", "content": "hi"}], role="EASY")
+        finally:
+            c.ollama.chat, c._api_chat = orig_chat, orig_api
+            for k, v in env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.assertEqual(reply.message.content, "from the api")
+        self.assertEqual(used, ["EASY"])
+
+
+class AttachmentTests(unittest.TestCase):
+    def test_instructions_about_selected_text_are_answered_directly(self):
+        for text in ("Summarize this.", "fix the grammar", "Draft a reply to this."):
+            self.assertEqual(router.direct_agent(text) or router.attachment_agent(text), "answer", text)
+        self.assertEqual(router.direct_agent("Turn this into reminders."), "calendar")
+        self.assertIsNone(router.attachment_agent("remind me about this tomorrow at 9"))
+
+    def test_selected_text_reaches_the_task_and_the_history(self):
+        llm = FakeLLM().install()
+        ctx = run_context.RunContext()
+        token = run_context.activate(ctx)
+        seen = []
+        try:
+            llm.when(lambda r: True, lambda r: seen.append(r["last"]["content"]) or "A short summary.")
+            conversation = [{"role": "system", "content": "s"}]
+            answer = session.run_turn(conversation, "Summarize this.",
+                                      attachment={"text": "Quarterly revenue rose 12 percent.", "app": "Safari"})
+        finally:
+            llm.uninstall()
+            run_context.deactivate(token)
+        self.assertEqual(answer, "A short summary.")
+        self.assertEqual(len(llm.calls), 1, "one plain answer, no planner")
+        self.assertIn("Quarterly revenue rose 12 percent.", seen[0])
+        self.assertIn("from Safari", conversation[1]["content"])
 
 
 if __name__ == "__main__":

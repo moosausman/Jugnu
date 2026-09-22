@@ -52,7 +52,7 @@ def is_answer_to(question: str, message: str) -> bool:
                 "answers that question (even partially) or is a different, new request. "
                 'Respond with exactly one JSON object: {"answers": true|false}')},
             {"role": "user", "content": f"Jugnu's question: {question}\nUser's message: {msg}"},
-        ], role="FAST", retries=1)
+        ], role="EASY", retries=1)
         return bool(data.get("answers"))
     except Exception:
         return False
@@ -137,3 +137,18 @@ def direct_agent(text: str) -> str | None:
     if not matched and _ANSWERABLE.search(t) and not _TIME_SENSITIVE.search(t):
         return "answer"
     return None
+
+
+def attachment_agent(instruction: str) -> str | None:
+    """For an instruction about attached text ("summarize this", "fix the
+    grammar", "reply to this"): a plain answer -- no tools, one model call
+    (local in Hybrid mode) -- unless it clearly needs a plan."""
+    t = " ".join((instruction or "").split())
+    if _MULTI_STEP.search(t) or _SCHEDULED.search(t):
+        return None
+    return "answer"
+
+
+# Timing words that make a request a schedule rather than an answer.
+_SCHEDULED = re.compile(r"\b(?:every|each (?:day|week|morning|night)|daily|weekly|remind me|in \d+ "
+                        r"(?:min|minute|hour|second)s?|at \d|tomorrow at|later|in the background)\b", re.I)

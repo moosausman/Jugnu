@@ -76,6 +76,14 @@ private struct HeaderView: View {
             Text("Jugnu")
                 .font(Theme.text(12.5, weight: .semibold))
                 .foregroundStyle(Theme.ink)
+            if appState.modelMode != "api" {
+                Text(appState.modelMode == "local" ? "Local" : "Hybrid")
+                    .font(Theme.text(10, weight: .medium))
+                    .foregroundStyle(Theme.inkDim)
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(Color.white.opacity(0.07)))
+                    .help(appState.modelMode == "local" ? "Running on this Mac (Ollama)" : "Easy work runs on this Mac; tool work on the API")
+            }
             if let status {
                 Text(status)
                     .font(Theme.text(11.5))
@@ -105,6 +113,16 @@ private struct HeaderView: View {
             }
 
             Menu {
+                Picker("Model", selection: Binding(
+                    get: { SettingsStore.ModelMode(rawValue: appState.modelMode) ?? .api },
+                    set: { appState.setModelMode($0) })) {
+                    ForEach(SettingsStore.ModelMode.allCases) { mode in
+                        Text(mode == .hybrid ? "Hybrid — local for easy work" : (mode == .local ? "Local only" : "API"))
+                            .tag(mode)
+                    }
+                }
+                .pickerStyle(.inline)
+                Divider()
                 Button("Settings…") { WindowManager.shared.showSettings() }
                 Button("Daily Review") { appState.requestDailyReview() }
                     .disabled(appState.thinking)

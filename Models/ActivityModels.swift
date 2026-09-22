@@ -172,14 +172,19 @@ struct RunActivity: Identifiable, Equatable {
     /// What the run cost, reported when it finishes: model calls and tokens (prompt + completion).
     var modelCalls: Int?
     var tokens: Int?
+    var localCalls: Int?
 
+    /// "2 model calls · 7.6k tokens", "+ 1 local", "Local only (free)", "No model calls".
     var costLabel: String? {
         guard let modelCalls else { return nil }
-        if modelCalls == 0 { return "No model calls" }
-        let calls = "\(modelCalls) model call\(modelCalls == 1 ? "" : "s")"
-        guard let tokens, tokens > 0 else { return calls }
-        let size = tokens >= 1000 ? String(format: "%.1fk", Double(tokens) / 1000) : "\(tokens)"
-        return "\(calls) · \(size) tokens"
+        let local = localCalls ?? 0
+        if modelCalls == 0 { return local > 0 ? "Local model only (free)" : "No model calls" }
+        var label = "\(modelCalls) model call\(modelCalls == 1 ? "" : "s")"
+        if let tokens, tokens > 0 {
+            label += " · " + (tokens >= 1000 ? String(format: "%.1fk", Double(tokens) / 1000) : "\(tokens)") + " tokens"
+        }
+        if local > 0 { label += " · +\(local) local" }
+        return label
     }
     let started = Date()
     var finished: Date?

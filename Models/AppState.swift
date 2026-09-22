@@ -184,6 +184,50 @@ final class AppState: ObservableObject {
         bridge = newBridge
     }
 
+    // MARK: Model mode (API / Hybrid / Local)
+
+    /// What the backend is actually using, as it last reported.
+    @Published var modelMode: String = SettingsStore.shared.modelMode.rawValue
+    @Published var localRunning = false
+    @Published var localModels: [String] = []
+
+    /// Switches where Jugnu's thinking runs, live: no restart.
+    func setModelMode(_ mode: SettingsStore.ModelMode) {
+        SettingsStore.shared.modelMode = mode
+        modelMode = mode.rawValue
+        // Applied to the running backend, so Settings shouldn't ask for a restart for it.
+        launchedEnvironment["JUGNU_MODEL_MODE"] = mode.rawValue
+        launchedEnvironment["JUGNU_PROVIDER"] = mode == .local ? "local" : "api"
+        sendRequest("set_model_mode", ["mode": .string(mode.rawValue)])
+    }
+
+    // MARK: Selected text from another app
+
+    struct Attachment: Equatable {
+        let text: String
+        let app: String
+    }
+
+    /// Text selected in another app, attached to the next message.
+    @Published var attachment: Attachment?
+    private var awaitingSelection = false
+
+    /// The "ask about selection" shortcut: read the selection from the app
+    /// in front (before Jugnu takes focus), then open with it attached.
+    func captureSelection() {
+        guard !awaitingSelection else { return }
+        awaitingSelection = true
+        sendRequest("selection")
+        // If MacBridge doesn't answer promptly, open anyway.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            if self.awaitingSelection {
+                self.awaitingSelection = false
+                WindowManager.shared.showChat()
+            }
+        }
+    }
+
     /// Which Mac account the next requests run on: "auto" (the default from
     /// Settings, or whatever the request itself says), "primary" (yours) or
     /// "agent" (the Jugnu account). Stays until changed.
@@ -199,10 +243,17 @@ final class AppState: ObservableObject {
         thinking = true
         statusLabel = "thinking"
         errorMessage = nil
-        messages.append(ChatMessage(role: .user, content: trimmed))
         var extra: [String: JSONValue] = [:]
         if targetAccount == "primary" || targetAccount == "agent" {
             extra["session"] = .string(targetAccount)
+        }
+        if let attachment {
+            extra["attachment"] = .object(["text": .string(attachment.text), "app": .string(attachment.app)])
+            let excerpt = attachment.text.count > 160 ? String(attachment.text.prefix(160)) + "…" : attachment.text
+            messages.append(ChatMessage(role: .user, content: "\(trimmed)\n“\(excerpt)”"))
+            self.attachment = nil
+        } else {
+            messages.append(ChatMessage(role: .user, content: trimmed))
         }
         bridge?.send(OutgoingRequest(type: "send", id: id, text: trimmed, extra: extra))
     }
@@ -469,6 +520,24 @@ final class AppState: ObservableObject {
             auditEvents = p["events"]?.array ?? []
             return true
 
+        case "model_mode":
+            if let mode = p["mode"]?.string { modelMode = mode }
+            localRunning = p["local"]?["running"]?.bool ?? localRunning
+            localModels = (p["local"]?["models"]?.array ?? []).compactMap(\.string)
+            return true
+
+        case "selection":
+            awaitingSelection = false
+            let text = (p["text"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let app = p["app"]?.string ?? ""
+            if !text.isEmpty {
+                attachment = Attachment(text: text, app: app)
+            } else {
+                showNotice(app.isEmpty ? "Nothing was selected." : "Nothing was selected in \(app).")
+            }
+            WindowManager.shared.showChat()
+            return true
+
         case "notice":
             noticeMessage = p["message"]?.string
             Task { @MainActor in
@@ -479,6 +548,14 @@ final class AppState: ObservableObject {
 
         default:
             return false
+        }
+    }
+
+    private func showNotice(_ message: String) {
+        noticeMessage = message
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_500_000_000)
+            if self.noticeMessage == message { self.noticeMessage = nil }
         }
     }
 
@@ -551,6 +628,9 @@ final class AppState: ObservableObject {
             activityTrackingEnabled = event.activityTracking ?? false
             dailyReviewScheduled = event.dailyReview ?? false
             statusLabel = "ready"
+            if let mode = event.payload["model_mode"]?.string { modelMode = mode }
+            localRunning = event.payload["local"]?["running"]?.bool ?? false
+            localModels = (event.payload["local"]?["models"]?.array ?? []).compactMap(\.string)
             refreshPermissions()
             sendRequest("get_approvals")
             if let history = event.history {
@@ -576,6 +656,7 @@ final class AppState: ObservableObject {
                 ensureRun(runId, requestId: event.id ?? "", goal: messages.last(where: { $0.role == .user })?.content ?? "")
                 updateRun(runId) { run in
                     run.modelCalls = usage?["calls"]?.int
+                    run.localCalls = usage?["local_calls"]?.int
                     run.tokens = (usage?["prompt_tokens"]?.int ?? 0) + (usage?["completion_tokens"]?.int ?? 0)
                 }
                 finishRun(runId, state: event.payload["cancelled"]?.bool == true ? "cancelled" : "done")

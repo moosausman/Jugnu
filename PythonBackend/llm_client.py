@@ -124,18 +124,63 @@ _KEY_ENV_CANDIDATES = [
     "GROQ_API_KEY",
     "TOGETHER_API_KEY",
 ]
-_ROLES = ("PLANNER", "AGENT", "SEARCH", "EMBED", "FAST", "DEEP")
+_ROLES = ("PLANNER", "AGENT", "SEARCH", "EMBED", "FAST", "DEEP", "EASY")
 
 # Model tiers. FAST is for cheap judgement calls (routing, verification,
 # memory extraction); DEEP for hard planning, coding and analysis. Each
 # falls back to an existing role, so nothing changes until a tier model is
 # configured:  FAST -> AGENT,  DEEP -> PLANNER.
-_ROLE_FALLBACK = {"FAST": "AGENT", "DEEP": "PLANNER"}
+#
+# EASY is text-only work that never picks a tool: chit-chat, explanations
+# and summaries, and background judgement calls (verifying, routing,
+# reflecting, extracting). It's what Hybrid mode runs locally for free.
+_ROLE_FALLBACK = {"FAST": "AGENT", "DEEP": "PLANNER", "EASY": "FAST"}
+
+# ---------------------------------------------------------------------------
+# Model mode -- the user's switch, changeable at runtime (no restart):
+#   api     every chat role on the hosted API
+#   hybrid  EASY work on the local Ollama model, everything else on the API
+#   local   every chat role on Ollama
+# Unset: the older JUGNU_PROVIDER / JUGNU_<ROLE>_PROVIDER variables decide.
+# ---------------------------------------------------------------------------
+MODES = ("api", "hybrid", "local")
+_mode = os.environ.get("JUGNU_MODEL_MODE", "").lower()
+
+
+def model_mode() -> str:
+    if _mode in MODES:
+        return _mode
+    return "local" if os.environ.get("JUGNU_PROVIDER", "local").lower() == "local" else "api"
+
+
+def set_mode(mode: str) -> str:
+    """Switches where chat roles run, effective from the next call."""
+    global _mode
+    mode = (mode or "").lower()
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {MODES}")
+    _mode = mode
+    log(f"model mode -> {mode}")
+    return mode
+
+
+def local_status() -> dict:
+    """Whether Ollama is answering, and which models it has -- for the UI."""
+    try:
+        r = requests.get(os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/") + "/api/tags", timeout=2)
+        r.raise_for_status()
+        return {"running": True, "models": sorted(m["name"] for m in r.json().get("models", []))}
+    except Exception:
+        return {"running": False, "models": []}
 
 
 def _provider_for(role: str) -> str:
     role = role.upper()
     assert role in _ROLES, f"unknown role {role!r}, expected one of {_ROLES}"
+    if role != "EMBED" and _mode in MODES:
+        if _mode == "hybrid":
+            return "local" if role == "EASY" else "api"
+        return _mode
     explicit = os.environ.get(f"JUGNU_{role}_PROVIDER")
     if not explicit and role in _ROLE_FALLBACK:
         explicit = os.environ.get(f"JUGNU_{_ROLE_FALLBACK[role]}_PROVIDER")
@@ -165,6 +210,8 @@ def _provider_for(role: str) -> str:
 #   JUGNU_EMBED_MODEL     default: nomic-embed-text (EMBED role)
 def _local_model_for(role: str) -> str:
     role = role.upper()
+    if role == "EASY":
+        return os.environ.get("JUGNU_EASY_MODEL") or _local_model_for("AGENT")
     if role == "FAST":
         return os.environ.get("JUGNU_FAST_MODEL") or _local_model_for("AGENT")
     if role == "DEEP":
@@ -295,8 +342,18 @@ def chat(messages, tools=None, think=False, role="AGENT", keep_alive=None, model
         if tools:
             kwargs["tools"] = tools
         kwargs["keep_alive"] = keep_alive if keep_alive is not None else _OLLAMA_KEEP_ALIVE
-        response = _with_retries(lambda: ollama.chat(**kwargs), f"ollama.chat ({resolved_model})")
-        _record_usage(getattr(response, "prompt_eval_count", 0), getattr(response, "eval_count", 0))
+        try:
+            response = _with_retries(lambda: ollama.chat(**kwargs), f"ollama.chat ({resolved_model})")
+        except Exception as e:
+            # Hybrid promises easy work never fails because of the local
+            # side: Ollama not running, or the model not pulled.
+            if model_mode() == "hybrid" and _api_configured():
+                log(f"local model unavailable ({e}); using the API for this call")
+                return _api_chat(messages, tools=tools, role=role)
+            raise RuntimeError(
+                f"The local model ({resolved_model}) isn't available: {e}. Start Ollama and run "
+                f"`ollama pull {resolved_model}`, or switch Jugnu to API mode.") from e
+        _record_usage(getattr(response, "prompt_eval_count", 0), getattr(response, "eval_count", 0), local=True)
         return response
     if provider == "api":
         return _api_chat(messages, tools=tools, role=role)
@@ -429,15 +486,20 @@ def _api_chat(messages, tools, role) -> ChatResponse:
     return ChatResponse(_message_from_wire(choice))
 
 
-def _record_usage(prompt_tokens, completion_tokens) -> None:
-    """Credits one model call (and its tokens) to the run that made it."""
+def _record_usage(prompt_tokens, completion_tokens, local: bool = False) -> None:
+    """Credits one model call (and its tokens) to the run that made it.
+    Local calls are counted separately: they cost nothing."""
     try:
         import run_context
         ctx = run_context.get()
         if ctx is not None:
-            ctx.add_usage(prompt_tokens or 0, completion_tokens or 0)
+            ctx.add_usage(prompt_tokens or 0, completion_tokens or 0, local=local)
     except Exception:
         pass
+
+
+def _api_configured() -> bool:
+    return bool(os.environ.get("JUGNU_API_BASE_URL")) and any(os.environ.get(n) for n in _KEY_ENV_CANDIDATES)
 
 def _api_embed(input, role) -> dict:  # noqa: A002
     if isinstance(input, str):

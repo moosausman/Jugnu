@@ -16,7 +16,11 @@ llm_client.py for the full model-role split).
 Protocol -- one JSON object per line, UTF-8:
 
   Swift -> Python
-    {"type": "send",  "id": "<uuid>", "text": "...", "session": "primary" | "agent"}
+    {"type": "send",  "id": "<uuid>", "text": "...", "session": "primary" | "agent",
+                      "attachment": {"text": "...", "app": "..."}}
+        (attachment optional: text the user selected in another app)
+    {"type": "set_model_mode", "mode": "api" | "hybrid" | "local"}   -> {"type": "model_mode", ...}
+    {"type": "selection"}          -> {"type": "selection", "text": "...", "app": "..."}
         (session optional: the account the user picked for this request;
          absent = the default account / whatever the request itself says)
     {"type": "clear"}
@@ -211,7 +215,8 @@ def visible_history(conversation: list) -> list:
     ]
 
 
-def handle_send(conversation: list, request_id: str, text: str, session_choice: str | None = None) -> None:
+def handle_send(conversation: list, request_id: str, text: str, session_choice: str | None = None,
+                attachment: dict | None = None) -> None:
     ctx = run_context.RunContext(request_id=request_id, goal=text, emit=emit, origin="user")
     run_context.register(ctx)
     token = run_context.activate(ctx)
@@ -261,6 +266,7 @@ def handle_send(conversation: list, request_id: str, text: str, session_choice: 
             conversation,
             text,
             session_override=session_choice,
+            attachment=attachment,
             on_plan=on_plan,
             on_task_start=on_task_start,
             on_status=on_status,
@@ -322,6 +328,8 @@ def _ready_payload(conversation: list) -> dict:
         "proactive_actions": proactive.PROACTIVE_ACTIONS_ENABLED,
         "activity_tracking": ACTIVITY_TRACKING_ENABLED,
         "daily_review": DAILY_REVIEW_ENABLED,
+        "model_mode": llm_client.model_mode(),
+        "local": llm_client.local_status(),
     }
 
 
@@ -584,7 +592,31 @@ def _handle_management(kind: str, request: dict, conv_ref, worker) -> bool:
     if kind == "os_permissions":
         threading.Thread(target=_emit_os_permissions, name="os-permissions", daemon=True).start()
         return True
+    if kind == "set_model_mode":
+        # API / Hybrid / Local, switched live -- takes effect on the next model call.
+        try:
+            mode = llm_client.set_mode(str(request.get("mode", "")))
+        except ValueError as e:
+            emit({"type": "notice", "message": str(e)})
+            return True
+        threading.Thread(target=lambda: emit({"type": "model_mode", "mode": mode,
+                                              "local": llm_client.local_status()}), daemon=True).start()
+        return True
+    if kind == "selection":
+        threading.Thread(target=_emit_selection, name="selection", daemon=True).start()
+        return True
     return False
+
+
+def _emit_selection() -> None:
+    """The text selected in the frontmost app, read through MacBridge (which
+    has Accessibility), for the "ask about selection" shortcut."""
+    try:
+        r = macbridge.call("/ui/selection", {"copyFallback": True}, timeout=6, session="primary")
+    except Exception as e:
+        r = {"ok": False, "error": str(e)}
+    emit({"type": "selection", "ok": bool(r.get("ok")), "text": str(r.get("text") or "")[:12000],
+          "app": r.get("app") or "", "error": r.get("error") or ""})
 
 
 def _emit_os_permissions() -> None:
@@ -774,8 +806,9 @@ def main() -> None:
             request_id = request.get("id", "")
             text = request.get("text", "")
             choice = request.get("session") if request.get("session") in ("primary", "agent") else None
+            attached = request.get("attachment") if isinstance(request.get("attachment"), dict) else None
             emit({"type": "status", "id": request_id, "label": "thinking"})
-            worker.submit(lambda rid=request_id, t=text, c=choice: handle_send(conv_ref.value, rid, t, c))
+            worker.submit(lambda rid=request_id, t=text, c=choice, a=attached: handle_send(conv_ref.value, rid, t, c, a))
 
         elif kind == "daily_review":
             request_id = request.get("id", "")

@@ -41,7 +41,7 @@ struct SettingsView: View {
                     switch pane {
                     case .general: GeneralPane(settings: settings)
                     case .autonomy: AutonomyPane(appState: appState)
-                    case .models: ModelsPane(settings: settings)
+                    case .models: ModelsPane(settings: settings, appState: appState)
                     case .privacy: PrivacyPane(appState: appState)
                     case .about: AboutPane(appState: appState)
                     }
@@ -121,6 +121,27 @@ private struct GeneralPane: View {
                 ToggleRow("Minimize to firefly", detail: "Shrinks into a firefly in the corner instead of the Dock.",
                           isOn: $settings.minimizeToFirefly)
             }
+            SettingsGroup("Shortcuts") {
+                HStack {
+                    RowLabel("Show Jugnu", detail: "Tap to show or hide. Hold to talk, let go to send.")
+                    Spacer()
+                    Picker("", selection: $settings.openHotkey) {
+                        ForEach(SettingsStore.HotkeyPreset.allCases) { Text($0.label).tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                .padding(.vertical, 2)
+                RowDivider()
+                HStack {
+                    RowLabel("Ask about selection", detail: "Opens Jugnu with the text you've selected in any app.")
+                    Spacer()
+                    Picker("", selection: $settings.selectionHotkey) {
+                        ForEach(SettingsStore.HotkeyPreset.allCases) { Text($0.label).tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                .padding(.vertical, 2)
+            }
             SettingsGroup("Working") {
                 ToggleRow("Work quietly", detail: "Silent commands and background tabs instead of taking over the screen.",
                           isOn: $settings.quietModeEnabled)
@@ -168,57 +189,84 @@ private struct GeneralPane: View {
 
 private struct ModelsPane: View {
     @ObservedObject var settings: SettingsStore
+    @ObservedObject var appState: AppState
     @State private var perRole = false
+    @State private var moreLocal = false
     @State private var showSpotify = false
+
+    private var mode: Binding<SettingsStore.ModelMode> {
+        Binding(get: { settings.modelMode }, set: { appState.setModelMode($0) })
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            SettingsGroup("Chat") {
-                HStack {
-                    RowLabel("Provider", detail: nil)
-                    Spacer()
-                    Picker("", selection: $settings.provider) {
-                        ForEach(SettingsStore.Provider.allCases) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+            SettingsGroup("Mode") {
+                Picker("", selection: mode) {
+                    ForEach(SettingsStore.ModelMode.allCases) { Text($0.label).tag($0) }
                 }
-                .padding(.vertical, 2)
-                RowDivider()
-                if settings.provider == .api {
-                    FieldRow("Base URL", text: $settings.apiBaseURL, placeholder: "https://api.openai.com/v1")
-                    RowDivider()
-                    FieldRow("API key", text: $settings.apiKey, placeholder: "Stored in Keychain", secure: true)
-                    RowDivider()
-                    FieldRow("Model", text: $settings.apiChatModel, placeholder: "gemini-3.1-flash-lite")
-                    RowDivider()
-                    FieldRow("Fast model", text: $settings.apiFastModel, placeholder: "Same as Model")
-                    RowDivider()
-                    FieldRow("Deep model", text: $settings.apiDeepModel, placeholder: "Same as Model")
-                    RowDivider()
-                    DisclosureRow("Per-role models", isOn: $perRole)
-                    if perRole {
-                        RowDivider()
-                        FieldRow("Planner", text: $settings.apiPlannerModelOverride, placeholder: "Same as Model")
-                        RowDivider()
-                        FieldRow("Agent", text: $settings.apiAgentModelOverride, placeholder: "Same as Model")
-                        RowDivider()
-                        FieldRow("Search", text: $settings.apiSearchModelOverride, placeholder: "Same as Model")
-                    }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.top, 4)
+                Text(settings.modelMode.help)
+                    .font(Theme.text(11.5))
+                    .foregroundStyle(Theme.inkDim)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
+                if settings.modelMode != .api {
+                    Label(localStatus, systemImage: appState.localRunning ? "checkmark.circle.fill" : "exclamationmark.circle")
+                        .font(Theme.text(11))
+                        .foregroundStyle(appState.localRunning ? Theme.success : Theme.clay)
+                        .padding(.vertical, 5)
                 } else {
-                    FieldRow("Planner", text: $settings.plannerModel, placeholder: "qwen3.6:27b")
-                    RowDivider()
-                    FieldRow("Agent", text: $settings.agentModel, placeholder: "qwen3.5:9b")
-                    RowDivider()
-                    FieldRow("Search", text: $settings.searchModel, placeholder: "Same as Agent")
-                    RowDivider()
-                    FieldRow("Fast", text: $settings.fastModel, placeholder: "Same as Agent")
-                    RowDivider()
-                    FieldRow("Deep", text: $settings.deepModel, placeholder: "Same as Planner")
+                    Spacer().frame(height: 4)
                 }
             }
-            Footnote(settings.provider == .api
-                     ? "Fast handles quick checks; Deep handles hard planning and writing."
-                     : "Ollama model tags, e.g. from `ollama pull qwen3.5:9b`.")
+            Footnote("Switches instantly. Also in the ··· menu in Jugnu's window.")
+                .padding(.top, -12)
+
+            SettingsGroup("Hosted API") {
+                FieldRow("Base URL", text: $settings.apiBaseURL, placeholder: "https://api.openai.com/v1")
+                RowDivider()
+                FieldRow("API key", text: $settings.apiKey, placeholder: "Stored in Keychain", secure: true)
+                RowDivider()
+                FieldRow("Model", text: $settings.apiChatModel, placeholder: "gemini-3.1-flash-lite")
+                RowDivider()
+                FieldRow("Fast model", text: $settings.apiFastModel, placeholder: "Same as Model")
+                RowDivider()
+                FieldRow("Deep model", text: $settings.apiDeepModel, placeholder: "Same as Model")
+                RowDivider()
+                DisclosureRow("Per-role models", isOn: $perRole)
+                if perRole {
+                    RowDivider()
+                    FieldRow("Planner", text: $settings.apiPlannerModelOverride, placeholder: "Same as Model")
+                    RowDivider()
+                    FieldRow("Agent", text: $settings.apiAgentModelOverride, placeholder: "Same as Model")
+                    RowDivider()
+                    FieldRow("Search", text: $settings.apiSearchModelOverride, placeholder: "Same as Model")
+                }
+            }
+
+            SettingsGroup("On this Mac (Ollama)") {
+                LocalModelRow("Easy work", text: $settings.easyModel, placeholder: "qwen3.5:9b",
+                              installed: appState.localModels)
+                RowDivider()
+                DisclosureRow("Models for Local mode", isOn: $moreLocal)
+                if moreLocal {
+                    RowDivider()
+                    LocalModelRow("Planner", text: $settings.plannerModel, placeholder: "qwen3.6:27b",
+                                  installed: appState.localModels)
+                    RowDivider()
+                    LocalModelRow("Agent", text: $settings.agentModel, placeholder: "qwen3.5:9b",
+                                  installed: appState.localModels)
+                    RowDivider()
+                    LocalModelRow("Fast", text: $settings.fastModel, placeholder: "Same as Agent",
+                                  installed: appState.localModels)
+                    RowDivider()
+                    LocalModelRow("Deep", text: $settings.deepModel, placeholder: "Same as Planner",
+                                  installed: appState.localModels)
+                }
+            }
+            Footnote("Model changes here apply after a restart; the mode above applies instantly.")
                 .padding(.top, -12)
 
             SettingsGroup("Memory embeddings") {
@@ -250,6 +298,55 @@ private struct ModelsPane: View {
             }
             Footnote("Not needed to play music. Only used as an extra way to look songs up.")
                 .padding(.top, -12)
+        }
+    }
+
+    private var localStatus: String {
+        guard appState.localRunning else {
+            return settings.modelMode == .hybrid ? "Ollama isn't running, so easy work uses the API until it is."
+                : "Ollama isn't running. Start it, or switch to API."
+        }
+        let wanted = settings.easyModel
+        if !appState.localModels.isEmpty && !appState.localModels.contains(wanted)
+            && !appState.localModels.contains(wanted + ":latest") {
+            return "Ollama is running, but \(wanted) isn't installed (ollama pull \(wanted))."
+        }
+        return "Ollama is running · \(wanted)"
+    }
+}
+
+/// A model name field with a menu of the models Ollama has installed.
+private struct LocalModelRow: View {
+    let label: String
+    @Binding var text: String
+    var placeholder = ""
+    let installed: [String]
+
+    init(_ label: String, text: Binding<String>, placeholder: String, installed: [String]) {
+        self.label = label
+        self._text = text
+        self.placeholder = placeholder
+        self.installed = installed
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            FieldRow(label, text: $text, placeholder: placeholder)
+            if !installed.isEmpty {
+                Menu {
+                    ForEach(installed.filter { !$0.contains("embed") }, id: \.self) { name in
+                        Button(name) { text = name }
+                    }
+                } label: {
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 10))
+                        .foregroundStyle(Theme.inkDim)
+                        .frame(width: 20, height: 22)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Installed models")
+            }
         }
     }
 }

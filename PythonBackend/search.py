@@ -269,4 +269,4 @@ def answer_from_search(query: str, result: Optional[SearchResult] = None) -> str
         return f"SEARCH_FAILED: {result.error or 'no sources'}"
     from memory import persona_reply
     return persona_reply(f"Question: {query}\n\nSources:\n{result.to_agent_string()}\n\n"
-                         "Answer briefly from these sources only, citing the links you used.", role="AGENT")
+                         "Answer briefly from these sources only, citing the links you used.", role="EASY")

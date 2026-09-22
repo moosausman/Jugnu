@@ -21,6 +21,11 @@ struct ConversationView: View {
                     if appState.thinking {
                         ThinkingRow(line: appState.progressLine)
                     }
+                    if let notice = appState.noticeMessage {
+                        NoticeRow(symbol: "info.circle", text: notice, tint: Theme.inkDim) {
+                            appState.noticeMessage = nil
+                        }
+                    }
                     if let notice = appState.securityNotice {
                         NoticeRow(symbol: "shield.lefthalf.filled", text: notice, tint: Theme.clay) {
                             appState.securityNotice = nil

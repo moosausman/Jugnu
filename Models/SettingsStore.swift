@@ -45,6 +45,44 @@ final class SettingsStore: ObservableObject {
         var label: String { self == .local ? "Local (Ollama)" : "Hosted API" }
     }
 
+    /// Where Jugnu's thinking runs, switchable live (no restart).
+    enum ModelMode: String, CaseIterable, Identifiable, Hashable {
+        case api, hybrid, local
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .api: return "API"
+            case .hybrid: return "Hybrid"
+            case .local: return "Local"
+            }
+        }
+        var help: String {
+            switch self {
+            case .api: return "Everything runs on your hosted model."
+            case .hybrid: return "Chat, explanations and background checks run free on this Mac; tool work uses the API."
+            case .local: return "Everything runs on this Mac through Ollama. Free and private; slower, and less reliable with tools."
+            }
+        }
+    }
+
+    /// A global keyboard shortcut, from a short list of combinations that
+    /// don't collide with macOS's own.
+    enum HotkeyPreset: String, CaseIterable, Identifiable, Hashable {
+        case optionSpace, controlSpace, optionShiftSpace, controlShiftSpace, commandShiftSpace, commandShiftJ, off
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .optionSpace: return "⌥ Space"
+            case .controlSpace: return "⌃ Space"
+            case .optionShiftSpace: return "⌥⇧ Space"
+            case .controlShiftSpace: return "⌃⇧ Space"
+            case .commandShiftSpace: return "⌘⇧ Space"
+            case .commandShiftJ: return "⌘⇧ J"
+            case .off: return "Off"
+            }
+        }
+    }
+
     // MARK: - Provider (chat) + per-role model overrides
     // llm_client.py runs four distinct *roles*, not one model for
     // everything -- PLANNER (decides the task plan and which tool to
@@ -57,6 +95,26 @@ final class SettingsStore: ObservableObject {
     // goes through a hosted API).
 
     @Published var provider: Provider { didSet { defaults.set(provider.rawValue, forKey: Keys.provider) } }
+
+    /// API / Hybrid / Local. Applied to the running backend immediately
+    /// (AppState.setModelMode) and passed at every launch.
+    @Published var modelMode: ModelMode {
+        didSet {
+            defaults.set(modelMode.rawValue, forKey: Keys.modelMode)
+            provider = modelMode == .local ? .local : .api
+        }
+    }
+    /// The local model Hybrid mode uses for easy work.
+    @Published var easyModel: String { didSet { defaults.set(easyModel, forKey: Keys.easyModel) } }
+
+    /// Tap to show or hide Jugnu; hold to talk.
+    @Published var openHotkey: HotkeyPreset {
+        didSet { defaults.set(openHotkey.rawValue, forKey: Keys.openHotkey); HotKeys.shared.reload() }
+    }
+    /// Opens Jugnu with the text selected in the frontmost app attached.
+    @Published var selectionHotkey: HotkeyPreset {
+        didSet { defaults.set(selectionHotkey.rawValue, forKey: Keys.selectionHotkey); HotKeys.shared.reload() }
+    }
 
     // Local mode
     @Published var plannerModel: String { didSet { defaults.set(plannerModel, forKey: Keys.plannerModel) } }
@@ -168,6 +226,10 @@ final class SettingsStore: ObservableObject {
 
     private enum Keys {
         static let provider = "settings.provider"
+        static let modelMode = "settings.modelMode"
+        static let easyModel = "settings.easyModel"
+        static let openHotkey = "settings.openHotkey"
+        static let selectionHotkey = "settings.selectionHotkey"
         static let plannerModel = "settings.plannerModel"
         static let agentModel = "settings.agentModel"
         static let searchModel = "settings.searchModel"
@@ -214,7 +276,13 @@ final class SettingsStore: ObservableObject {
     // regardless of which copy of bridge.py ends up running it.
 
     private init() {
-        provider = Provider(rawValue: defaults.string(forKey: Keys.provider) ?? "") ?? .api
+        let savedProvider = Provider(rawValue: defaults.string(forKey: Keys.provider) ?? "") ?? .api
+        provider = savedProvider
+        modelMode = ModelMode(rawValue: defaults.string(forKey: Keys.modelMode) ?? "")
+            ?? (savedProvider == .local ? .local : .api)
+        easyModel = defaults.string(forKey: Keys.easyModel) ?? "qwen3.5:9b"
+        openHotkey = HotkeyPreset(rawValue: defaults.string(forKey: Keys.openHotkey) ?? "") ?? .optionSpace
+        selectionHotkey = HotkeyPreset(rawValue: defaults.string(forKey: Keys.selectionHotkey) ?? "") ?? .optionShiftSpace
         plannerModel = defaults.string(forKey: Keys.plannerModel) ?? "qwen3.6:27b"
         agentModel = defaults.string(forKey: Keys.agentModel) ?? "qwen3.5:9b"
         searchModel = defaults.string(forKey: Keys.searchModel) ?? ""
@@ -257,7 +325,9 @@ final class SettingsStore: ObservableObject {
 
     var backendEnvironment: [String: String] {
         var env: [String: String] = [
-            "JUGNU_PROVIDER": provider.rawValue,
+            "JUGNU_PROVIDER": modelMode == .local ? "local" : "api",
+            "JUGNU_MODEL_MODE": modelMode.rawValue,
+            "JUGNU_EASY_MODEL": easyModel,
             "JUGNU_EMBED_PROVIDER": embedProvider.rawValue,
             "JUGNU_QUIET_MODE": quietModeEnabled ? "1" : "0",
             "JUGNU_DEFAULT_SESSION": useAgentAccountByDefault ? "agent" : "primary",
@@ -270,8 +340,9 @@ final class SettingsStore: ObservableObject {
             "JUGNU_DAILY_REVIEW_TIME": dailyReviewTimeString,
         ]
 
-        switch provider {
-        case .local:
+        // Both sides are always configured: the mode can switch live
+        // between them without a restart.
+        do {
             env["JUGNU_PLANNER_MODEL"] = plannerModel
             // AGENT role's local-mode model var is just JUGNU_MODEL, not
             // JUGNU_AGENT_MODEL -- it also doubles as SEARCH's fallback.
@@ -279,7 +350,8 @@ final class SettingsStore: ObservableObject {
             if !searchModel.isEmpty { env["JUGNU_SEARCH_MODEL"] = searchModel }
             if !fastModel.isEmpty { env["JUGNU_FAST_MODEL"] = fastModel }
             if !deepModel.isEmpty { env["JUGNU_DEEP_MODEL"] = deepModel }
-        case .api:
+        }
+        do {
             env["JUGNU_API_BASE_URL"] = apiBaseURL
             env["JUGNU_API_CHAT_MODEL"] = apiChatModel
             if !apiPlannerModelOverride.isEmpty { env["JUGNU_PLANNER_API_MODEL"] = apiPlannerModelOverride }

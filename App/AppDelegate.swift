@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MacBridgeLauncher.launchIfNeeded()
         AppState.shared.launchBackend()
         MenuBarController.shared.install()
+        HotKeys.shared.install()
         WindowManager.shared.showChat()
     }
 

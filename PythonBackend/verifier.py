@@ -245,7 +245,7 @@ def check_task(task, agent_result, *, complexity: str = "standard") -> Verdict:
     try:
         return request_json(
             [{"role": "system", "content": _VERIFY_PROMPT}, {"role": "user", "content": prompt}],
-            role="FAST", retries=1, validate=lambda d: Verdict(**d))
+            role="EASY", retries=1, validate=lambda d: Verdict(**d))
     except Exception as e:
         log(f"verification call failed ({e}); falling back to evidence")
         ok = bool(outcomes) and outcomes[-1].ok
@@ -277,7 +277,7 @@ def check_objective(plan, tasks) -> Verdict:
     try:
         return request_json(
             [{"role": "system", "content": _OBJECTIVE_PROMPT}, {"role": "user", "content": "\n".join(lines)}],
-            role="FAST", retries=1, validate=lambda d: Verdict(**d))
+            role="EASY", retries=1, validate=lambda d: Verdict(**d))
     except Exception as e:
         log(f"objective check failed: {e}")
         done = all(t.status == "done" or t.optional for t in tasks)

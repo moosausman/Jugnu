@@ -242,7 +242,7 @@ def reflect(run_id: str, plan, answer: str, user_texts: list | None = None):
     messages = [{"role": "system", "content": _REFLECTION_PROMPT},
                 {"role": "user", "content": _run_evidence(run_id, plan, answer)}]
     try:
-        reflection = request_json(messages, role="FAST", retries=1, validate=lambda d: Reflection(**d))
+        reflection = request_json(messages, role="EASY", retries=1, validate=lambda d: Reflection(**d))
     except Exception as e:
         _log(f"no valid reflection: {e}")
         _credit_skills(plan)
@@ -377,7 +377,7 @@ def _record_correction(previous_exchange: str, correction: str) -> None:
         data = request_json([
             {"role": "system", "content": _CORRECTION_PROMPT},
             {"role": "user", "content": f"What happened:\n{previous_exchange[-3000:]}\n\nThe user's correction: {correction}"},
-        ], role="FAST", retries=1)
+        ], role="EASY", retries=1)
     except Exception as e:
         _log(f"couldn't extract correction: {e}")
         return

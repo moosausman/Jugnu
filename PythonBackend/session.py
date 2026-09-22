@@ -83,6 +83,16 @@ def _apply_session(plan: Plan) -> Optional[str]:
     return None
 
 
+def _attachment_block(attachment: Optional[dict]) -> str:
+    text = str((attachment or {}).get("text") or "").strip()
+    if not text:
+        return ""
+    app = str((attachment or {}).get("app") or "another app").strip()
+    return (f'Selected text (from {app}):\n"""\n{text[:12000]}\n"""\n'
+            "Work from this selected text. Don't bring in unrelated context (what's playing, other "
+            "apps) or guess details it doesn't state, such as who it's about.")
+
+
 def _fast_path(user_text: str, session_choice: Optional[str] = None) -> Optional[str]:
     try:
         import fastpath
@@ -143,12 +153,15 @@ def run_turn(
     on_tool_call=None,
     on_tool_result=None,
     session_override: Optional[str] = None,
+    attachment: Optional[dict] = None,
 ) -> str:
     """Runs one full turn and returns the user-facing answer. `conversation`
     is mutated in place (user and assistant messages appended) and saved.
 
     session_override -- "primary" or "agent" when the user picked the account
     for this request in the app; it beats the default and anything inferred.
+    attachment -- {"text", "app"}: text the user selected in another app and
+    sent along with this instruction ("summarize this").
 
     Callbacks, all optional:
       on_plan(plan)                        -- once, when a real plan exists
@@ -158,8 +171,9 @@ def run_turn(
       on_tool_result(task, name, args, res) -- right after
     """
     ctx = run_context.current()
+    attached = _attachment_block(attachment)
     with _conv_lock:
-        conversation.append({"role": "user", "content": user_text})
+        conversation.append({"role": "user", "content": f"{user_text}\n\n{attached}" if attached else user_text})
 
     route = router.quick_route(user_text)
     if route == "control":
@@ -170,7 +184,7 @@ def run_turn(
     if route == "conversation":
         transcript = recent_transcript(conversation, limit=6)
         answer = persona_reply(f"Conversation so far:\n{transcript}\n\nReply naturally and briefly to the "
-                               f"user's latest message.", role="AGENT") or "👍"
+                               f"user's latest message.", role="EASY") or "👍"
         _finish(conversation, answer)
         smem.record_event("user_message", user_text)
         return answer
@@ -187,7 +201,7 @@ def run_turn(
     # Zero model calls: one obvious tool call ("play X", "pause", "open
     # Safari") runs straight through, unless a paused run is waiting on an
     # answer (the message might be that answer).
-    if not tasks_store.pending_question():
+    if not attached and not tasks_store.pending_question():
         quick = _fast_path(user_text, session_override)
         if quick is not None:
             audit.log("plan", run_id=ctx.run_id, summary=f"(fast path) {user_text}", detail={"fast_path": True})
@@ -209,7 +223,10 @@ def run_turn(
     # A request plainly about one thing goes straight to that agent; only
     # multi-step, scheduled or ambiguous requests pay for the planner.
     direct = router.direct_agent(user_text)
-    plan = _direct_plan(user_text, direct) if direct else make_plan(user_text, recent_context=full_context)
+    if attached and not direct:
+        direct = router.attachment_agent(user_text)
+    goal = f"{user_text}\n\n{attached}" if attached else user_text
+    plan = _direct_plan(goal, direct) if direct else make_plan(goal, recent_context=full_context)
     # Explicit words beat model inference: "on the Jugnu account" / "on my
     # account" and "in the background" are honoured even when the planner
     # misses them (it has).

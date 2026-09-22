@@ -40,6 +40,20 @@ MacBridge (Swift, per macOS session: :8765 you, :8766 Jugnu account)
    Permission status · Spotify (+ keyless search) · WhatsApp (+ one-call /whatsapp/message)
    Web search (off-screen WebKit)
 
+## Model mode (API / Hybrid / Local)
+Switched live from the ··· menu or Settings › Models (`set_model_mode`, no
+restart). Hybrid runs the EASY role -- chit-chat, plain answers, summaries of
+selected text, and background checks (verifying, routing, reflecting,
+extracting) -- on Ollama for free, and everything that calls tools on the
+API. If Ollama is down, Hybrid quietly uses the API for that call. Local runs
+every chat role on Ollama. Local calls are counted separately (`local_calls`).
+
+## Shortcuts
+⌥Space: tap to show/hide, hold to talk (sends on release). ⌥⇧Space: open with
+the frontmost app's selected text attached (MacBridge `/ui/selection`:
+Accessibility, or Cmd-C with the clipboard restored). Both configurable in
+Settings › General; registered with Carbon, so no extra permission.
+
 ## Cost per request
 Every model call re-sends the agent's instructions and tool schemas, so the
 number of calls is the cost. Roughly:
@@ -65,7 +79,7 @@ Each turn reports its model calls and tokens (the `assistant` event's
 
 ## Tests
 `cd PythonBackend && PythonEnv/bin/python -m unittest discover -s tests`
-(121 tests; `test_bridge_e2e.py` runs the real bridge against a fake model server,
+(129 tests; `test_bridge_e2e.py` runs the real bridge against a fake model server,
 `test_efficiency.py` covers the fast path, direct routing and the loop's stop rules.)
 
 ## Adding a tool
