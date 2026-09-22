@@ -190,6 +190,25 @@ final class AppState: ObservableObject {
     @Published var modelMode: String = SettingsStore.shared.modelMode.rawValue
     @Published var localRunning = false
     @Published var localModels: [String] = []
+    /// Claude mode: whether the Claude Code CLI is installed (and which
+    /// version), and the result of the last "Test" -- nil until one runs.
+    @Published var claudeInstalled = false
+    @Published var claudeVersion = ""
+    @Published var claudeCheck: (ok: Bool, message: String)?
+    @Published var checkingClaude = false
+
+    /// One tiny real call through Claude Code, to confirm it's logged in.
+    func checkClaude() {
+        checkingClaude = true
+        claudeCheck = nil
+        sendRequest("check_claude")
+    }
+
+    private func applyClaudeStatus(_ status: JSONValue?) {
+        guard let status, !status.isNull else { return }
+        claudeInstalled = status["installed"]?.bool ?? false
+        claudeVersion = status["version"]?.string ?? ""
+    }
 
     /// Switches where Jugnu's thinking runs, live: no restart.
     func setModelMode(_ mode: SettingsStore.ModelMode) {
@@ -524,6 +543,15 @@ final class AppState: ObservableObject {
             if let mode = p["mode"]?.string { modelMode = mode }
             localRunning = p["local"]?["running"]?.bool ?? localRunning
             localModels = (p["local"]?["models"]?.array ?? []).compactMap(\.string)
+            applyClaudeStatus(p["claude"])
+            return true
+
+        case "claude_status":
+            checkingClaude = false
+            applyClaudeStatus(p)
+            claudeCheck = p["ok"]?.bool == true
+                ? (true, "Connected\(claudeVersion.isEmpty ? "" : " · Claude Code \(claudeVersion)")")
+                : (false, p["error"]?.string ?? "Claude Code didn't answer.")
             return true
 
         case "selection":
@@ -628,6 +656,7 @@ final class AppState: ObservableObject {
             if let mode = event.payload["model_mode"]?.string { modelMode = mode }
             localRunning = event.payload["local"]?["running"]?.bool ?? false
             localModels = (event.payload["local"]?["models"]?.array ?? []).compactMap(\.string)
+            applyClaudeStatus(event.payload["claude"])
             refreshPermissions()
             sendRequest("get_approvals")
             if let history = event.history {

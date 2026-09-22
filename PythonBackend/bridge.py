@@ -19,7 +19,8 @@ Protocol -- one JSON object per line, UTF-8:
     {"type": "send",  "id": "<uuid>", "text": "...", "session": "primary" | "agent",
                       "attachment": {"text": "...", "app": "..."}}
         (attachment optional: text the user selected in another app)
-    {"type": "set_model_mode", "mode": "api" | "hybrid" | "local"}   -> {"type": "model_mode", ...}
+    {"type": "set_model_mode", "mode": "api" | "hybrid" | "local" | "claude"}   -> {"type": "model_mode", ...}
+    {"type": "check_claude"}                                      -> {"type": "claude_status", ...}
     {"type": "selection"}          -> {"type": "selection", "text": "...", "app": "..."}
         (session optional: the account the user picked for this request;
          absent = the default account / whatever the request itself says)
@@ -149,6 +150,7 @@ import uuid
 ROOT = os.environ.get("JUGNU_ROOT", os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+import claude_code
 import llm_client
 from tools.tools import SCHEMAS
 from tools import macbridge
@@ -330,6 +332,7 @@ def _ready_payload(conversation: list) -> dict:
         "daily_review": DAILY_REVIEW_ENABLED,
         "model_mode": llm_client.model_mode(),
         "local": llm_client.local_status(),
+        "claude": claude_code.status(),
     }
 
 
@@ -600,7 +603,13 @@ def _handle_management(kind: str, request: dict, conv_ref, worker) -> bool:
             emit({"type": "notice", "message": str(e)})
             return True
         threading.Thread(target=lambda: emit({"type": "model_mode", "mode": mode,
-                                              "local": llm_client.local_status()}), daemon=True).start()
+                                              "local": llm_client.local_status(),
+                                              "claude": claude_code.status()}), daemon=True).start()
+        return True
+    if kind == "check_claude":
+        # One tiny real call: is Claude Code installed and logged in?
+        threading.Thread(target=lambda: emit({"type": "claude_status", **claude_code.check()}),
+                         name="check-claude", daemon=True).start()
         return True
     if kind == "selection":
         threading.Thread(target=_emit_selection, name="selection", daemon=True).start()

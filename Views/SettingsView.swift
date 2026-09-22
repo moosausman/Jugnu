@@ -213,7 +213,14 @@ private struct ModelsPane: View {
                     .foregroundStyle(Theme.inkDim)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 4)
-                if settings.modelMode != .api {
+                if settings.modelMode == .claude {
+                    Label(appState.claudeInstalled ? "Claude Code \(appState.claudeVersion) · \(settings.claudeModel)"
+                          : "Claude Code isn't installed yet. See Claude plan below.",
+                          systemImage: appState.claudeInstalled ? "checkmark.circle.fill" : "exclamationmark.circle")
+                        .font(Theme.text(11))
+                        .foregroundStyle(appState.claudeInstalled ? Theme.success : Theme.clay)
+                        .padding(.vertical, 5)
+                } else if settings.modelMode != .api {
                     Label(localStatus, systemImage: appState.localRunning ? "checkmark.circle.fill" : "exclamationmark.circle")
                         .font(Theme.text(11))
                         .foregroundStyle(appState.localRunning ? Theme.success : Theme.clay)
@@ -246,6 +253,18 @@ private struct ModelsPane: View {
                     FieldRow("Search", text: $settings.apiSearchModelOverride, placeholder: "Same as Model")
                 }
             }
+
+            SettingsGroup("Claude plan (Claude Code)") {
+                ClaudeModelRow("Model", selection: $settings.claudeModel, options: ["sonnet", "opus", "haiku"])
+                RowDivider()
+                ClaudeModelRow("Easy work", selection: $settings.claudeEasyModel, options: ["haiku", "sonnet"])
+                RowDivider()
+                claudeStatusRow
+            }
+            Footnote(appState.claudeInstalled
+                     ? "Log in once: run `claude` in Terminal and sign in with your Claude account. Shares your plan's limits with Claude and Claude Code."
+                     : "Install Claude Code, then run `claude` in Terminal once and sign in with your Claude account.")
+                .padding(.top, -12)
 
             SettingsGroup("On this Mac (Ollama)") {
                 LocalModelRow("Easy work", text: $settings.easyModel, placeholder: "qwen3.5:9b",
@@ -302,6 +321,46 @@ private struct ModelsPane: View {
         }
     }
 
+    private static let installCommand = "curl -fsSL https://claude.ai/install.sh | bash"
+
+    @ViewBuilder
+    private var claudeStatusRow: some View {
+        HStack(spacing: 8) {
+            if !appState.claudeInstalled {
+                Text(Self.installCommand)
+                    .font(Theme.mono(11))
+                    .foregroundStyle(Theme.inkDim)
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                Spacer()
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(Self.installCommand, forType: .string)
+                }
+                .buttonStyle(JugnuButtonStyle(kind: .secondary, compact: true))
+                Button("Check again") { appState.checkClaude() }
+                    .buttonStyle(JugnuButtonStyle(kind: .secondary, compact: true))
+            } else {
+                if appState.checkingClaude {
+                    ProgressView().controlSize(.small)
+                    Text("Asking Claude…").font(Theme.text(11.5)).foregroundStyle(Theme.inkFaint)
+                } else if let check = appState.claudeCheck {
+                    Label(check.message, systemImage: check.ok ? "checkmark.circle.fill" : "exclamationmark.circle")
+                        .font(Theme.text(11.5))
+                        .foregroundStyle(check.ok ? Theme.success : Theme.clay)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("Claude Code \(appState.claudeVersion)").font(Theme.text(12)).foregroundStyle(Theme.inkDim)
+                }
+                Spacer()
+                Button("Test") { appState.checkClaude() }
+                    .buttonStyle(JugnuButtonStyle(kind: .secondary, compact: true))
+                    .disabled(appState.checkingClaude)
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
     private var localStatus: String {
         guard appState.localRunning else {
             return settings.modelMode == .hybrid ? "Ollama isn't running, so easy work uses the API until it is."
@@ -313,6 +372,32 @@ private struct ModelsPane: View {
             return "Ollama is running, but \(wanted) isn't installed (ollama pull \(wanted))."
         }
         return "Ollama is running · \(wanted)"
+    }
+}
+
+/// One of Claude Code's model aliases, from a menu.
+private struct ClaudeModelRow: View {
+    let label: String
+    @Binding var selection: String
+    let options: [String]
+
+    init(_ label: String, selection: Binding<String>, options: [String]) {
+        self.label = label
+        self._selection = selection
+        self.options = options
+    }
+
+    var body: some View {
+        HStack {
+            Text(label).font(Theme.text(12.5)).foregroundStyle(Theme.ink)
+            Spacer()
+            Picker("", selection: $selection) {
+                ForEach(options, id: \.self) { Text($0.capitalized).tag($0) }
+            }
+            .labelsHidden()
+            .fixedSize()
+        }
+        .padding(.vertical, 2)
     }
 }
 

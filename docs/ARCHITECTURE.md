@@ -40,13 +40,26 @@ MacBridge (Swift, per macOS session: :8765 you, :8766 Jugnu account)
    Permission status · Spotify (+ keyless search) · WhatsApp (+ one-call /whatsapp/message)
    Web search (off-screen WebKit)
 
-## Model mode (API / Hybrid / Local)
+## Model mode (API / Hybrid / Local / Claude)
 Switched live from the ··· menu or Settings › Models (`set_model_mode`, no
 restart). Hybrid runs the EASY role -- chit-chat, plain answers, summaries of
 selected text, and background checks (verifying, routing, reflecting,
 extracting) -- on Ollama for free, and everything that calls tools on the
 API. If Ollama is down, Hybrid quietly uses the API for that call. Local runs
 every chat role on Ollama. Local calls are counted separately (`local_calls`).
+
+Claude runs every chat role on the user's Claude plan through the Claude Code
+CLI (`claude_code.py`): one `claude -p --output-format json` run per call,
+with Claude Code's own tools, MCP servers, settings and session history off,
+in an empty working folder, and `ANTHROPIC_API_KEY` removed from its
+environment so it bills the plan. Tools go in the system prompt and Claude
+answers `{"content", "tool_calls"}` JSON, which comes back in the same shape
+as the API's, so Jugnu still does all the acting (policy, approvals,
+MacBridge). Sonnet for planning and tools, Haiku for EASY/FAST (Settings ›
+Models). It never falls back to the API. Needs the standalone CLI, logged in
+once with `claude`; the copy inside the Claude desktop app isn't used.
+Personal use on your own Mac only: a Jugnu shipped to other people must use
+API keys.
 
 ## Shortcuts
 ⌥Space (global, configurable in Settings › General): opens Jugnu from any app

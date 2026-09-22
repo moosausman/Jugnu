@@ -55,6 +55,15 @@ private struct HeaderView: View {
     @ObservedObject var appState: AppState
     @Binding var showActivity: Bool
 
+    static func menuLabel(_ mode: SettingsStore.ModelMode) -> String {
+        switch mode {
+        case .api: return "API"
+        case .hybrid: return "Hybrid — local for easy work"
+        case .local: return "Local only"
+        case .claude: return "Claude — your Claude plan"
+        }
+    }
+
     private var state: FireflyState {
         if appState.errorMessage != nil { return .error }
         return appState.thinking ? .thinking : .idle
@@ -76,13 +85,13 @@ private struct HeaderView: View {
             Text("Jugnu")
                 .font(Theme.text(12.5, weight: .semibold))
                 .foregroundStyle(Theme.ink)
-            if appState.modelMode != "api" {
-                Text(appState.modelMode == "local" ? "Local" : "Hybrid")
+            if let mode = SettingsStore.ModelMode(rawValue: appState.modelMode), mode != .api {
+                Text(mode.label)
                     .font(Theme.text(10, weight: .medium))
                     .foregroundStyle(Theme.inkDim)
                     .padding(.horizontal, 5).padding(.vertical, 1)
                     .background(Capsule().fill(Color.white.opacity(0.07)))
-                    .help(appState.modelMode == "local" ? "Running on this Mac (Ollama)" : "Easy work runs on this Mac; tool work on the API")
+                    .help(mode.help)
             }
             if let status {
                 Text(status)
@@ -117,8 +126,7 @@ private struct HeaderView: View {
                     get: { SettingsStore.ModelMode(rawValue: appState.modelMode) ?? .api },
                     set: { appState.setModelMode($0) })) {
                     ForEach(SettingsStore.ModelMode.allCases) { mode in
-                        Text(mode == .hybrid ? "Hybrid — local for easy work" : (mode == .local ? "Local only" : "API"))
-                            .tag(mode)
+                        Text(Self.menuLabel(mode)).tag(mode)
                     }
                 }
                 .pickerStyle(.inline)

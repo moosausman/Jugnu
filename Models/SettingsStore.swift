@@ -47,13 +47,14 @@ final class SettingsStore: ObservableObject {
 
     /// Where Jugnu's thinking runs, switchable live (no restart).
     enum ModelMode: String, CaseIterable, Identifiable, Hashable {
-        case api, hybrid, local
+        case api, hybrid, local, claude
         var id: String { rawValue }
         var label: String {
             switch self {
             case .api: return "API"
             case .hybrid: return "Hybrid"
             case .local: return "Local"
+            case .claude: return "Claude"
             }
         }
         var help: String {
@@ -61,6 +62,7 @@ final class SettingsStore: ObservableObject {
             case .api: return "Everything runs on your hosted model."
             case .hybrid: return "Chat, explanations and background checks run free on this Mac; tool work uses the API."
             case .local: return "Everything runs on this Mac through Ollama. Free and private; slower, and less reliable with tools."
+            case .claude: return "Everything runs on your Claude plan through Claude Code. No API credits; counts toward your plan's usage limits."
             }
         }
     }
@@ -106,6 +108,10 @@ final class SettingsStore: ObservableObject {
     }
     /// The local model Hybrid mode uses for easy work.
     @Published var easyModel: String { didSet { defaults.set(easyModel, forKey: Keys.easyModel) } }
+    /// Claude mode: the model for planning and tool work, and the one for
+    /// easy work (chat, checks). Claude Code's aliases: sonnet, opus, haiku.
+    @Published var claudeModel: String { didSet { defaults.set(claudeModel, forKey: Keys.claudeModel) } }
+    @Published var claudeEasyModel: String { didSet { defaults.set(claudeEasyModel, forKey: Keys.claudeEasyModel) } }
 
     /// Opens Jugnu from any app, attaching the text selected there (and
     /// hides it when pressed with Jugnu in front).
@@ -227,6 +233,8 @@ final class SettingsStore: ObservableObject {
         static let provider = "settings.provider"
         static let modelMode = "settings.modelMode"
         static let easyModel = "settings.easyModel"
+        static let claudeModel = "settings.claudeModel"
+        static let claudeEasyModel = "settings.claudeEasyModel"
         static let openHotkey = "settings.openHotkey"
         static let holdOptionToTalk = "settings.holdOptionToTalk"
         static let plannerModel = "settings.plannerModel"
@@ -280,6 +288,8 @@ final class SettingsStore: ObservableObject {
         modelMode = ModelMode(rawValue: defaults.string(forKey: Keys.modelMode) ?? "")
             ?? (savedProvider == .local ? .local : .api)
         easyModel = defaults.string(forKey: Keys.easyModel) ?? "qwen3.5:9b"
+        claudeModel = defaults.string(forKey: Keys.claudeModel) ?? "sonnet"
+        claudeEasyModel = defaults.string(forKey: Keys.claudeEasyModel) ?? "haiku"
         openHotkey = HotkeyPreset(rawValue: defaults.string(forKey: Keys.openHotkey) ?? "") ?? .optionSpace
         holdOptionToTalk = defaults.object(forKey: Keys.holdOptionToTalk) as? Bool ?? true
         plannerModel = defaults.string(forKey: Keys.plannerModel) ?? "qwen3.6:27b"
@@ -327,6 +337,8 @@ final class SettingsStore: ObservableObject {
             "JUGNU_PROVIDER": modelMode == .local ? "local" : "api",
             "JUGNU_MODEL_MODE": modelMode.rawValue,
             "JUGNU_EASY_MODEL": easyModel,
+            "JUGNU_CLAUDE_MODEL": claudeModel,
+            "JUGNU_CLAUDE_EASY_MODEL": claudeEasyModel,
             "JUGNU_EMBED_PROVIDER": embedProvider.rawValue,
             "JUGNU_QUIET_MODE": quietModeEnabled ? "1" : "0",
             "JUGNU_DEFAULT_SESSION": useAgentAccountByDefault ? "agent" : "primary",

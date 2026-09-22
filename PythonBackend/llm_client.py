@@ -1,6 +1,7 @@
 """
 llm_client.py -- the only module in Jugnu that is allowed to import `ollama`
-or talk to a hosted model API. Every other file (agent_core, executor,
+or talk to a hosted model API (claude_code.py is its helper for running on
+the user's Claude plan). Every other file (agent_core, executor,
 planner, search, semantic_memory) calls llm_client.chat() / llm_client.embed()
 and never knows or cares whether that request just ran on this machine or
 went out over the network.
@@ -77,6 +78,8 @@ import sys
 import time
 import ollama
 import requests
+
+import claude_code
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -141,9 +144,12 @@ _ROLE_FALLBACK = {"FAST": "AGENT", "DEEP": "PLANNER", "EASY": "FAST"}
 #   api     every chat role on the hosted API
 #   hybrid  EASY work on the local Ollama model, everything else on the API
 #   local   every chat role on Ollama
+#   claude  every chat role on the user's Claude plan, through the Claude
+#           Code CLI (claude_code.py) -- no API credits
 # Unset: the older JUGNU_PROVIDER / JUGNU_<ROLE>_PROVIDER variables decide.
+# Embeddings never follow the mode: they stay wherever JUGNU_EMBED_PROVIDER says.
 # ---------------------------------------------------------------------------
-MODES = ("api", "hybrid", "local")
+MODES = ("api", "hybrid", "local", "claude")
 _mode = os.environ.get("JUGNU_MODEL_MODE", "").lower()
 
 
@@ -237,8 +243,11 @@ def resolved_model_name(role: str) -> str:
     provider is active -- for display/logging only. chat()/embed() resolve
     this internally and never need it passed back in."""
     role = role.upper()
-    if _provider_for(role) == "api":
+    provider = _provider_for(role)
+    if provider == "api":
         return _api_embed_model_for(role) if role == "EMBED" else _api_model_for(role)
+    if provider == "claude":
+        return f"claude {claude_code.model_for(role)}"
     return _local_model_for(role)
 
 def _api_key() -> str:
@@ -357,7 +366,9 @@ def chat(messages, tools=None, think=False, role="AGENT", keep_alive=None, model
         return response
     if provider == "api":
         return _api_chat(messages, tools=tools, role=role)
-    raise ValueError(f"unknown provider {provider!r} (expected 'local' or 'api')")
+    if provider == "claude":
+        return _claude_chat(messages, tools=tools, role=role)
+    raise ValueError(f"unknown provider {provider!r} (expected 'local', 'api' or 'claude')")
 
 def embed(input, role="EMBED", model=None):  # noqa: A002 (matches ollama.embed's param name)
     """Drop-in replacement for ollama.embed(). Returns {"embeddings": [...]}
@@ -484,6 +495,19 @@ def _api_chat(messages, tools, role) -> ChatResponse:
     _record_usage(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
     choice = data["choices"][0]["message"]
     return ChatResponse(_message_from_wire(choice))
+
+
+def _claude_chat(messages, tools, role) -> ChatResponse:
+    """One call on the user's Claude plan. No fallback to the API on
+    failure: quietly spending API credits is what this mode exists to avoid."""
+    try:
+        content, calls, usage = claude_code.chat(messages, tools, role)
+    except claude_code.ClaudeCodeError as e:
+        raise RuntimeError(str(e)) from e
+    prompt = sum(usage.get(k) or 0 for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+    _record_usage(prompt, usage.get("output_tokens", 0))
+    tool_calls = [ToolCall(name=name, arguments=args, id=f"call_cc_{i}") for i, (name, args) in enumerate(calls)]
+    return ChatResponse(Message(role="assistant", content=content, tool_calls=tool_calls))
 
 
 def _record_usage(prompt_tokens, completion_tokens, local: bool = False) -> None:
