@@ -131,6 +131,8 @@ private struct HeaderView: View {
                 }
                 .pickerStyle(.inline)
                 Divider()
+                Button("Jugnu's Desk") { WindowManager.shared.showDesk() }
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
                 Button("Settings…") { WindowManager.shared.showSettings() }
                 Button("Daily Review") { appState.requestDailyReview() }
                     .disabled(appState.thinking)

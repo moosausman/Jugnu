@@ -20,6 +20,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
 
     private var chatWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var deskWindow: NSWindow?
     private var orb: FireflyOrb?
     /// The chat panel is minimized into the firefly orb.
     private(set) var isCollapsed = false
@@ -302,6 +303,30 @@ final class WindowManager: NSObject, NSWindowDelegate {
     }
 
     // MARK: - Settings
+
+    /// Jugnu's desk: a live view of the session Jugnu works in.
+    func showDesk() {
+        let window = deskWindow ?? makeDeskWindow()
+        present(window)
+    }
+
+    private func makeDeskWindow() -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: CGSize(width: 900, height: 640)),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
+            backing: .buffered, defer: false)
+        window.title = "Jugnu's Desk"
+        window.titlebarAppearsTransparent = true
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.backgroundColor = NSColor(Theme.windowBackground)
+        window.isReleasedWhenClosed = false
+        window.contentMinSize = CGSize(width: 560, height: 420)
+        window.contentView = NSHostingView(rootView: DeskView(appState: AppState.shared))
+        window.center()
+        window.setFrameAutosaveName("JugnuDeskWindow")
+        deskWindow = window
+        return window
+    }
 
     func showSettings() {
         let window = settingsWindow ?? makeSettingsWindow()

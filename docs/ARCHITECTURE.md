@@ -61,6 +61,27 @@ once with `claude`; the copy inside the Claude desktop app isn't used.
 Personal use on your own Mac only: a Jugnu shipped to other people must use
 API keys.
 
+## Jugnu's desk (⌘⇧D)
+A live view of the macOS session Jugnu works in -- normally the Jugnu
+account, which has a full desktop of its own even while it's switched out.
+MacBridge keeps one `SCStream` running and hands out its latest JPEG
+(`/screen/stream/start|frame|stop`); the app long-polls it, so a still
+screen costs nothing and the capture stops itself once the window closes.
+No model is involved: pixels only, no API or plan usage.
+
+What a screen-sharing window can't do, and this does: it captions the work
+from the run's own events (objective, step, current tool), keeps about two
+minutes of frames so you can scrub back to the moment something went wrong
+with each tool call marked on the line, and hands control over politely --
+taking the pointer pauses the run (`pause`/`resume`) instead of fighting it,
+and giving it back resumes. Clicks and keys in the window are replayed
+through `/mouse/*` and `/keyboard/*` in that session.
+
+Note: MacBridge's "pointer parked in the top-left corner" escape gesture now
+applies only to a session someone is sitting at (`kCGSSessionOnConsoleKey`).
+In a switched-out session the pointer rests there forever, which blocked
+every move the Jugnu account tried to make.
+
 ## Shortcuts
 ⌥Space (global, configurable in Settings › General): opens Jugnu from any app
 with the text selected there attached, if any (MacBridge `/ui/selection`:
