@@ -403,7 +403,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Jugnu reads which app and window you have open, and controls apps like Finder, Safari and Terminal, to carry out what you ask it to do.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Jugnu listens only while you hold the microphone button, so you can speak a request instead of typing it.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Jugnu listens only while you hold Option (or use the microphone button), so you can speak a request instead of typing it.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Jugnu turns what you say into text for your request. Recognition runs on this Mac when possible.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -435,7 +435,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Jugnu reads which app and window you have open, and controls apps like Finder, Safari and Terminal, to carry out what you ask it to do.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Jugnu listens only while you hold the microphone button, so you can speak a request instead of typing it.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Jugnu listens only while you hold Option (or use the microphone button), so you can speak a request instead of typing it.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Jugnu turns what you say into text for your request. Recognition runs on this Mac when possible.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

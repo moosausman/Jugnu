@@ -1,69 +1,62 @@
 import AppKit
 import Carbon.HIToolbox
+import Combine
 
-/// System-wide shortcuts (Settings › General › Shortcuts):
+/// Jugnu's keyboard shortcuts.
 ///
-///   open       tap: show or hide Jugnu.  hold: talk -- Jugnu listens while
-///              the keys are held and sends what you said when you let go.
-///   selection  opens Jugnu with the text selected in the frontmost app
-///              attached, ready for "summarize", "reply", "translate"...
+///   ⌥Space (global, configurable)   open Jugnu from any app, attaching the
+///                                   text selected there, if any. Pressed
+///                                   while Jugnu is in front, hides it.
+///   hold ⌥ (while Jugnu is in front) talk: Jugnu listens while Option is
+///                                   held and sends what you said when you
+///                                   let go.
 ///
-/// Uses Carbon's RegisterEventHotKey, which needs no Accessibility or Input
-/// Monitoring permission and consumes the keystroke so it doesn't also
-/// type into the app in front.
+/// The global shortcut uses Carbon's RegisterEventHotKey: no Accessibility
+/// or Input Monitoring permission, and the keystroke doesn't also reach the
+/// app in front. Hold-to-talk uses a local event monitor, so it only ever
+/// sees keys pressed in Jugnu's own window -- holding Option in other apps
+/// (Option-drag, special characters) is never affected.
 @MainActor
-final class HotKeys {
+final class HotKeys: ObservableObject {
     static let shared = HotKeys()
 
-    private enum ID: UInt32 { case open = 1, selection = 2 }
+    /// Set when the shortcut couldn't be registered -- usually because
+    /// another app (ChatGPT, Raycast...) already uses it. Shown in Settings.
+    @Published private(set) var problem: String?
 
-    private var refs: [EventHotKeyRef] = []
+    private var ref: EventHotKeyRef?
     private var handler: EventHandlerRef?
-    private var pressedAt: Date?
-    private var holdTimer: Timer?
-    private var talking = false
-
-    /// How long the open shortcut has to be held before it means "talk".
-    private static let holdThreshold: TimeInterval = 0.35
+    private let talk = HoldOptionToTalk()
 
     private init() {}
 
     func install() {
-        guard handler == nil else { return }
-        var events = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
-                      EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
-        InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
-            var hotKey = EventHotKeyID()
-            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
-                              nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKey)
-            let pressed = GetEventKind(event) == UInt32(kEventHotKeyPressed)
-            let id = hotKey.id
-            Task { @MainActor in HotKeys.shared.handle(id: id, pressed: pressed) }
-            return noErr
-        }, events.count, &events, nil, &handler)
-        reload()
-    }
-
-    /// Re-registers both shortcuts from Settings.
-    func reload() {
-        refs.forEach { UnregisterEventHotKey($0) }
-        refs.removeAll()
-        let settings = SettingsStore.shared
-        register(settings.openHotkey, id: .open)
-        if settings.selectionHotkey != settings.openHotkey {
-            register(settings.selectionHotkey, id: .selection)
+        if handler == nil {
+            var events = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))]
+            InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
+                Task { @MainActor in HotKeys.shared.openPressed() }
+                return noErr
+            }, events.count, &events, nil, &handler)
         }
+        reload()
+        talk.install()
     }
 
-    private func register(_ preset: SettingsStore.HotkeyPreset, id: ID) {
+    /// Re-registers the shortcut from Settings.
+    func reload() {
+        if let ref { UnregisterEventHotKey(ref) }
+        ref = nil
+        problem = nil
+        let preset = SettingsStore.shared.openHotkey
         guard let (keyCode, modifiers) = Self.combo(preset) else { return }
-        var ref: EventHotKeyRef?
-        let status = RegisterEventHotKey(keyCode, modifiers, EventHotKeyID(signature: OSType(0x4A474E55), id: id.rawValue),
-                                         GetApplicationEventTarget(), 0, &ref)
-        if status == noErr, let ref {
-            refs.append(ref)
+        var newRef: EventHotKeyRef?
+        let status = RegisterEventHotKey(keyCode, modifiers, EventHotKeyID(signature: OSType(0x4A474E55), id: 1),
+                                         GetApplicationEventTarget(), 0, &newRef)
+        if status == noErr, let newRef {
+            ref = newRef
         } else {
-            print("[HotKeys] couldn't register \(preset.label) (it may be taken by another app): \(status)")
+            problem = "\(preset.label) is already used by another app (ChatGPT and Raycast use it by default). "
+                + "Pick another shortcut, or change it in that app."
         }
     }
 
@@ -80,41 +73,96 @@ final class HotKeys {
         }
     }
 
-    // MARK: - Actions
+    private func openPressed() {
+        if WindowManager.shared.isChatFrontmost {
+            WindowManager.shared.hideChat()
+        } else {
+            // Reads the selection from the app in front before Jugnu takes
+            // focus, then opens with it attached (or just opens).
+            AppState.shared.captureSelection()
+        }
+    }
+}
 
-    private func handle(id: UInt32, pressed: Bool) {
-        switch ID(rawValue: id) {
-        case .open: pressed ? openPressed() : openReleased()
-        case .selection: if pressed { AppState.shared.captureSelection() }
-        case .none: break
+/// Hold Option in Jugnu's window to talk; let go to send.
+@MainActor
+private final class HoldOptionToTalk {
+    private var monitor: Any?
+    private var optionDown = false
+    private var talking = false
+    private var holdTimer: Timer?
+    private var releaseWatch: Timer?
+
+    /// How long Option must be held alone before it counts as "talk" -- long
+    /// enough that Option-Return, Option-arrows and ⌥-letter never trigger it.
+    private static let holdThreshold: TimeInterval = 0.3
+
+    func install() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown]) {
+            [weak self] event in
+            self?.handle(event)
+            return event
         }
     }
 
-    private func openPressed() {
-        pressedAt = Date()
-        holdTimer?.invalidate()
-        holdTimer = Timer.scheduledTimer(withTimeInterval: Self.holdThreshold, repeats: false) { _ in
-            Task { @MainActor in HotKeys.shared.startTalking() }
+    private func handle(_ event: NSEvent) {
+        guard SettingsStore.shared.holdOptionToTalk else { return }
+        switch event.type {
+        case .flagsChanged:
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                .subtracting([.capsLock, .numericPad, .function])
+            if mods == [.option] {
+                // A fresh press starts a hold. (Keyed off the timer rather than
+                // a remembered "down" flag, which could stick if the release
+                // happened in another app.)
+                guard !talking, holdTimer == nil, WindowManager.shared.isChatFrontmost else { return }
+                optionDown = true
+                holdTimer = Timer.scheduledTimer(withTimeInterval: Self.holdThreshold, repeats: false) { _ in
+                    Task { @MainActor in self.startTalking() }
+                }
+            } else if !mods.contains(.option) {
+                optionDown = false
+                cancelHold()
+                if talking { finishTalking() }
+            } else if !talking {
+                cancelHold()  // another modifier joined: it's a shortcut, not a hold
+            }
+        case .keyDown, .leftMouseDown, .rightMouseDown:
+            if optionDown && !talking { cancelHold() }  // ⌥-letter, Option-click...
+        default:
+            break
         }
+    }
+
+    private func cancelHold() {
+        holdTimer?.invalidate()
+        holdTimer = nil
     }
 
     private func startTalking() {
-        guard pressedAt != nil else { return }
+        holdTimer = nil
+        guard optionDown, NSEvent.modifierFlags.contains(.option), WindowManager.shared.isChatFrontmost else { return }
         talking = true
-        WindowManager.shared.showChat()
         NotificationCenter.default.post(name: .jugnuStartDictation, object: nil)
+        // The release can land somewhere else -- the first-use microphone
+        // prompt takes focus, or the user clicks away -- so also watch the
+        // key's real state, which needs no permission and no focus.
+        releaseWatch?.invalidate()
+        releaseWatch = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+            Task { @MainActor in
+                if !NSEvent.modifierFlags.contains(.option) { self.finishTalking() }
+            }
+        }
     }
 
-    private func openReleased() {
-        holdTimer?.invalidate()
-        holdTimer = nil
-        pressedAt = nil
-        if talking {
-            talking = false
-            NotificationCenter.default.post(name: .jugnuStopDictationAndSend, object: nil)
-        } else {
-            WindowManager.shared.toggleChat()
-        }
+    private func finishTalking() {
+        releaseWatch?.invalidate()
+        releaseWatch = nil
+        optionDown = false
+        guard talking else { return }
+        talking = false
+        NotificationCenter.default.post(name: .jugnuStopDictationAndSend, object: nil)
     }
 }
 

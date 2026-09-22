@@ -107,14 +107,13 @@ final class SettingsStore: ObservableObject {
     /// The local model Hybrid mode uses for easy work.
     @Published var easyModel: String { didSet { defaults.set(easyModel, forKey: Keys.easyModel) } }
 
-    /// Tap to show or hide Jugnu; hold to talk.
+    /// Opens Jugnu from any app, attaching the text selected there (and
+    /// hides it when pressed with Jugnu in front).
     @Published var openHotkey: HotkeyPreset {
         didSet { defaults.set(openHotkey.rawValue, forKey: Keys.openHotkey); HotKeys.shared.reload() }
     }
-    /// Opens Jugnu with the text selected in the frontmost app attached.
-    @Published var selectionHotkey: HotkeyPreset {
-        didSet { defaults.set(selectionHotkey.rawValue, forKey: Keys.selectionHotkey); HotKeys.shared.reload() }
-    }
+    /// Hold Option while Jugnu is in front to talk; let go to send.
+    @Published var holdOptionToTalk: Bool { didSet { defaults.set(holdOptionToTalk, forKey: Keys.holdOptionToTalk) } }
 
     // Local mode
     @Published var plannerModel: String { didSet { defaults.set(plannerModel, forKey: Keys.plannerModel) } }
@@ -229,7 +228,7 @@ final class SettingsStore: ObservableObject {
         static let modelMode = "settings.modelMode"
         static let easyModel = "settings.easyModel"
         static let openHotkey = "settings.openHotkey"
-        static let selectionHotkey = "settings.selectionHotkey"
+        static let holdOptionToTalk = "settings.holdOptionToTalk"
         static let plannerModel = "settings.plannerModel"
         static let agentModel = "settings.agentModel"
         static let searchModel = "settings.searchModel"
@@ -282,7 +281,7 @@ final class SettingsStore: ObservableObject {
             ?? (savedProvider == .local ? .local : .api)
         easyModel = defaults.string(forKey: Keys.easyModel) ?? "qwen3.5:9b"
         openHotkey = HotkeyPreset(rawValue: defaults.string(forKey: Keys.openHotkey) ?? "") ?? .optionSpace
-        selectionHotkey = HotkeyPreset(rawValue: defaults.string(forKey: Keys.selectionHotkey) ?? "") ?? .optionShiftSpace
+        holdOptionToTalk = defaults.object(forKey: Keys.holdOptionToTalk) as? Bool ?? true
         plannerModel = defaults.string(forKey: Keys.plannerModel) ?? "qwen3.6:27b"
         agentModel = defaults.string(forKey: Keys.agentModel) ?? "qwen3.5:9b"
         searchModel = defaults.string(forKey: Keys.searchModel) ?? ""

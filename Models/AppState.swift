@@ -220,7 +220,7 @@ final class AppState: ObservableObject {
         sendRequest("selection")
         // If MacBridge doesn't answer promptly, open anyway.
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
             if self.awaitingSelection {
                 self.awaitingSelection = false
                 WindowManager.shared.showChat()
@@ -530,11 +530,8 @@ final class AppState: ObservableObject {
             awaitingSelection = false
             let text = (p["text"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let app = p["app"]?.string ?? ""
-            if !text.isEmpty {
-                attachment = Attachment(text: text, app: app)
-            } else {
-                showNotice(app.isEmpty ? "Nothing was selected." : "Nothing was selected in \(app).")
-            }
+            // Nothing selected is the normal case: just open.
+            if !text.isEmpty { attachment = Attachment(text: text, app: app) }
             WindowManager.shared.showChat()
             return true
 

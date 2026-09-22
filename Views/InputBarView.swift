@@ -44,7 +44,9 @@ struct InputBarView: View {
         HStack(alignment: .bottom, spacing: 6) {
             AccountChip(appState: appState)
                 .padding(.bottom, 3)
-            TextField(speech.isListening ? "Listening…" : "Message Jugnu", text: $text, axis: .vertical)
+            TextField(speech.isListening ? "Listening… let go of ⌥ to send"
+                      : (SettingsStore.shared.holdOptionToTalk ? "Message Jugnu, or hold ⌥ to talk" : "Message Jugnu"),
+                      text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(Theme.text(13.5))
                 .foregroundStyle(Theme.ink)

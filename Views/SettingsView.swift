@@ -105,6 +105,7 @@ struct SettingsView: View {
 
 private struct GeneralPane: View {
     @ObservedObject var settings: SettingsStore
+    @ObservedObject private var hotKeys = HotKeys.shared
     @State private var launchAtLogin = LoginItemManager.isEnabled
 
     var body: some View {
@@ -123,7 +124,7 @@ private struct GeneralPane: View {
             }
             SettingsGroup("Shortcuts") {
                 HStack {
-                    RowLabel("Show Jugnu", detail: "Tap to show or hide. Hold to talk, let go to send.")
+                    RowLabel("Open Jugnu", detail: "From any app. Anything you've selected there comes along.")
                     Spacer()
                     Picker("", selection: $settings.openHotkey) {
                         ForEach(SettingsStore.HotkeyPreset.allCases) { Text($0.label).tag($0) }
@@ -131,16 +132,16 @@ private struct GeneralPane: View {
                     .labelsHidden().fixedSize()
                 }
                 .padding(.vertical, 2)
-                RowDivider()
-                HStack {
-                    RowLabel("Ask about selection", detail: "Opens Jugnu with the text you've selected in any app.")
-                    Spacer()
-                    Picker("", selection: $settings.selectionHotkey) {
-                        ForEach(SettingsStore.HotkeyPreset.allCases) { Text($0.label).tag($0) }
-                    }
-                    .labelsHidden().fixedSize()
+                if let problem = hotKeys.problem {
+                    Label(problem, systemImage: "exclamationmark.triangle.fill")
+                        .font(Theme.text(11))
+                        .foregroundStyle(Theme.clay)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, 4)
                 }
-                .padding(.vertical, 2)
+                RowDivider()
+                ToggleRow("Hold ⌥ to talk", detail: "While Jugnu is in front: hold Option, speak, let go to send.",
+                          isOn: $settings.holdOptionToTalk)
             }
             SettingsGroup("Working") {
                 ToggleRow("Work quietly", detail: "Silent commands and background tabs instead of taking over the screen.",

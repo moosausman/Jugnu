@@ -49,10 +49,13 @@ API. If Ollama is down, Hybrid quietly uses the API for that call. Local runs
 every chat role on Ollama. Local calls are counted separately (`local_calls`).
 
 ## Shortcuts
-⌥Space: tap to show/hide, hold to talk (sends on release). ⌥⇧Space: open with
-the frontmost app's selected text attached (MacBridge `/ui/selection`:
-Accessibility, or Cmd-C with the clipboard restored). Both configurable in
-Settings › General; registered with Carbon, so no extra permission.
+⌥Space (global, configurable in Settings › General): opens Jugnu from any app
+with the text selected there attached, if any (MacBridge `/ui/selection`:
+Accessibility, or Cmd-C with the clipboard restored for apps Accessibility
+can't read); pressed with Jugnu in front, hides it. Registered with Carbon,
+so no extra permission; Settings says so if another app holds the shortcut.
+Hold ⌥ while Jugnu is in front to talk; letting go sends. A local event
+monitor, so Option in other apps is never affected.
 
 ## Cost per request
 Every model call re-sends the agent's instructions and tool schemas, so the
