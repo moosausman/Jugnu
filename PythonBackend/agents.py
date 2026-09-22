@@ -297,6 +297,17 @@ AGENTS = {
             "nominatim_geocode", "nominatim_reverse_geocode",
         ],
     ),
+    "trading": Agent(
+        name="trading",
+        role="Backtests trading strategies on historical prices, checks whether an edge survives "
+             "costs and out-of-sample testing, and runs paper accounts with imaginary money. "
+             "Simulation only: it never buys anything and never advises what to buy.",
+        autonomous_safe=True,   # public prices in, arithmetic out
+        tool_names=[
+            "list_strategies", "backtest_strategy", "sweep_strategy",
+            "walk_forward_test", "paper_trade", "past_backtests",
+        ],
+    ),
     "temp_email": Agent(
         name="temp_email",
         role="Creates and checks disposable email inboxes for site signups "
@@ -456,6 +467,8 @@ _AUTONOMOUS_SAFE_TOOLS = frozenset({
     "geocode_location", "get_weather",
     "wikipedia_search", "wikipedia_summary",
     "nominatim_geocode", "nominatim_reverse_geocode",
+    "list_strategies", "backtest_strategy", "sweep_strategy", "walk_forward_test",
+    "paper_trade", "past_backtests",
 })
 
 

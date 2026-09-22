@@ -60,6 +60,8 @@ CAPABILITIES: dict[str, tuple[str, str]] = {
     "scripting": ("AppleScript and Shortcuts", "Run AppleScript and Shortcuts."),
     "location": ("Location and weather", "Geocoding, weather and reference lookups."),
     "memory": ("Memory", "Remember facts and learn from outcomes."),
+    "trading": ("Market simulator", "Backtest strategies and paper-trade on public prices. "
+                "Simulation only -- it can't reach a broker or move money."),
     "scheduling": ("Scheduled tasks", "Run tasks you schedule, later or on repeat."),
     "temp_email": ("Disposable email", "Create throwaway inboxes for signups."),
 }

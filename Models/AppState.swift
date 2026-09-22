@@ -210,6 +210,19 @@ final class AppState: ObservableObject {
         claudeVersion = status["version"]?.string ?? ""
     }
 
+    // MARK: Trading (the paper simulator)
+
+    /// The last reply from the trading engine, for the Trading window.
+    @Published var trading: JSONValue = .null
+    @Published var tradingBusy = false
+
+    func runTrading(_ action: String, _ extra: [String: JSONValue] = [:]) {
+        tradingBusy = true
+        var payload: [String: JSONValue] = ["action": .string(action)]
+        payload.merge(extra) { _, new in new }
+        sendRequest("trading", payload)
+    }
+
     /// Switches where Jugnu's thinking runs, live: no restart.
     func setModelMode(_ mode: SettingsStore.ModelMode) {
         SettingsStore.shared.modelMode = mode
@@ -544,6 +557,11 @@ final class AppState: ObservableObject {
             localRunning = p["local"]?["running"]?.bool ?? localRunning
             localModels = (p["local"]?["models"]?.array ?? []).compactMap(\.string)
             applyClaudeStatus(p["claude"])
+            return true
+
+        case "trading":
+            trading = p
+            tradingBusy = false
             return true
 
         case "claude_status":

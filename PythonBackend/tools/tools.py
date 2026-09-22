@@ -12,6 +12,14 @@ from .extra_tools import (
     create_temp_email, check_temp_email, read_temp_email_message,
 )
 from .notion_service import NotionService
+from .trading_tools import (
+    backtest_strategy,
+    list_strategies,
+    paper_trade,
+    past_backtests,
+    sweep_strategy,
+    walk_forward_test,
+)
 from .extended_tools import (
     window_list, window_focus, window_arrange, window_set_frame, window_minimize, window_close,
     ocr_image, ocr_screen, document_read, document_create, search_documents,
@@ -2712,6 +2720,14 @@ _tool_functions = [
     notion_add_meeting_notes,
     notion_remember,
     notion_retrieve,
+    # Paper-trading simulator (trading/). Read-only arithmetic on public
+    # prices -- no broker, no orders, no money.
+    list_strategies,
+    backtest_strategy,
+    sweep_strategy,
+    walk_forward_test,
+    paper_trade,
+    past_backtests,
 ]
 
 FUNCTIONS = {f.__name__: f for f in _tool_functions}

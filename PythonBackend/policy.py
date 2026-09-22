@@ -105,6 +105,13 @@ TOOL_POLICIES: dict[str, ToolPolicy] = {
     "remember": ToolPolicy(L, "memory"), "recall_memory": ToolPolicy(R, "memory"),
     "forget_memory": ToolPolicy(M, "memory", reversible=False, note="deletes a memory"),
     "search_web": ToolPolicy(R, "web"), "ask_user": ToolPolicy(R, "memory"),
+    # Market simulator: public prices in, arithmetic out. paper_trade writes
+    # a local simulated balance, which is why it's LOW rather than READ --
+    # nothing here can reach a broker or move money.
+    "list_strategies": ToolPolicy(R, "trading"), "backtest_strategy": ToolPolicy(R, "trading"),
+    "sweep_strategy": ToolPolicy(R, "trading"), "walk_forward_test": ToolPolicy(R, "trading"),
+    "past_backtests": ToolPolicy(R, "trading"),
+    "paper_trade": ToolPolicy(L, "trading", note="simulated account only; no broker, no money"),
     "schedule_task": ToolPolicy(L, "scheduling", note="runs later under the same approval rules"),
     "set_timer": ToolPolicy(L, "notifications"), "list_scheduled_tasks": ToolPolicy(R, "scheduling"),
     "cancel_scheduled_task": ToolPolicy(L, "scheduling"),

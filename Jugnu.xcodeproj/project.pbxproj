@@ -21,6 +21,7 @@
 		915290832FF70BB000A335C4 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 915290702FF70BB000A335C4 /* Theme.swift */; };
 		915290842FF70BB000A335C4 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 915290742FF70BB000A335C4 /* ContentView.swift */; };
 		915290852FF70BB000A335C4 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 915290672FF70BB000A335C4 /* AppDelegate.swift */; };
+		CC077CB5A5965FDB853D5395 /* TradingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25065A61A72A5B0BA4C3F74E /* TradingView.swift */; };
 		927351780280577DA55701A8 /* DeskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D661B6108FCD5A81B586E6C2 /* DeskView.swift */; };
 		915290882FF70BB000A335C4 /* FireflyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 915290752FF70BB000A335C4 /* FireflyView.swift */; };
 		916C56AF3017F49D0057FAD8 /* PythonBackend in Resources */ = {isa = PBXBuildFile; fileRef = 916749412FF733B2001B1780 /* PythonBackend */; };
@@ -56,6 +57,7 @@
 		5C21962ECB0353028D77B95B /* DeskFeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeskFeed.swift; sourceTree = "<group>"; };
 		915290702FF70BB000A335C4 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		915290742FF70BB000A335C4 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		25065A61A72A5B0BA4C3F74E /* TradingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TradingView.swift; sourceTree = "<group>"; };
 		D661B6108FCD5A81B586E6C2 /* DeskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeskView.swift; sourceTree = "<group>"; };
 		915290752FF70BB000A335C4 /* FireflyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FireflyView.swift; sourceTree = "<group>"; };
 		915290782FF70BB000A335C4 /* InputBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputBarView.swift; sourceTree = "<group>"; };
@@ -158,6 +160,7 @@
 				91E102E030487C88002B826C /* SettingsView.swift */,
 				91ED92693046ED6D007DCD9A /* VisualEffectBackground.swift */,
 				915290742FF70BB000A335C4 /* ContentView.swift */,
+				25065A61A72A5B0BA4C3F74E /* TradingView.swift */,
 				D661B6108FCD5A81B586E6C2 /* DeskView.swift */,
 				915290752FF70BB000A335C4 /* FireflyView.swift */,
 				915290782FF70BB000A335C4 /* InputBarView.swift */,
@@ -260,6 +263,7 @@
 				9113B06E302688E700E0B9B7 /* FireflyStatusIcon.swift in Sources */,
 				9116C9993022A095004C6AFD /* NotificationManager.swift in Sources */,
 				915290852FF70BB000A335C4 /* AppDelegate.swift in Sources */,
+				CC077CB5A5965FDB853D5395 /* TradingView.swift in Sources */,
 				927351780280577DA55701A8 /* DeskView.swift in Sources */,
 				915290882FF70BB000A335C4 /* FireflyView.swift in Sources */,
 				91E102E93049DFD7002B826C /* SettingsStore.swift in Sources */,

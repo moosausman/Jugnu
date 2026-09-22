@@ -82,6 +82,32 @@ applies only to a session someone is sitting at (`kCGSSessionOnConsoleKey`).
 In a switched-out session the pointer rests there forever, which blocked
 every move the Jugnu account tried to make.
 
+## Trading (⌘⇧T) -- a paper simulator
+`trading/` is a self-contained backtester: price history from Yahoo's chart
+endpoint and Binance's klines (no keys, no extra packages, cached in
+`trading.db`), an event-driven engine, five strategies, and the analysis that
+keeps a backtest honest. Three faces, one engine: `python -m trading` (CLI,
+including a bar-by-bar `replay`), Jugnu's tools (`tools/trading_tools.py`),
+and the Trading window.
+
+Rules the engine keeps, because they're where homemade backtesters cheat:
+a strategy sees bars only up to the one it decides on (`engine.View` raises
+if it reaches further), fills happen at the NEXT bar's open with slippage and
+commission deducted, and trades fire only when the target weight moves
+(a rebalance band), not on every price drift. Every result is reported
+against buy & hold over the same period with the same costs, and
+`metrics.warnings()` says out loud when it underperforms, when costs kill it,
+or when there are too few trades to mean anything. `analysis` adds cost
+sensitivity, parameter sweeps with a robustness figure, walk-forward, and a
+Monte Carlo trade shuffle.
+
+Paper accounts (`paper.py`) run the same rules forward on live prices with
+imaginary money, stepping idempotently per bar, and starting one schedules a
+daily check that reports back in chat. It is a simulator: no brokerage, no
+API keys, no orders. The tools are read-risk (`paper_trade` is low) under a
+`trading` capability, and Jugnu reports what a simulation did rather than
+advising what to buy.
+
 ## Shortcuts
 ⌥Space (global, configurable in Settings › General): opens Jugnu from any app
 with the text selected there attached, if any (MacBridge `/ui/selection`:
