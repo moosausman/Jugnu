@@ -271,12 +271,16 @@ def open_trading_terminal(count: int = 1, session: str = "", commands: list = No
         risk sma TSLA             drawdowns, VaR, beta, trade stats
         sweep rsi SPY             every parameter combination, as a heatmap
         wf sma QQQ 5              walk forward: tune, then trade blind
-        mc sma AAPL               Monte Carlo on the trade sequence
+        mc sma AAPL               Monte Carlo: the same trades, reshuffled
+        costs sma AAPL            what slippage does to it
         pf sma:AAPL, rsi:SPY      a portfolio of sleeves, rebalanced
         screen rsi<35 vol>2       scan the watchlist
+        corr AAPL MSFT NVDA       how they move together
         signals                   what every strategy says right now
-        fun AAPL / news TSLA      OpenBB fundamentals, headlines
-        paper new growth 100000   a paper account; `run` steps it forward
+        fa AAPL                   fundamentals (OpenBB) · `opt AAPL` options
+        why TSLA                  what moved it today
+        build buy BTC when RSI<30 writes a real strategy and runs it
+        paper start sma AAPL      a simulated account on live prices
         alert NVDA < 200          tell me when
 
     Args:

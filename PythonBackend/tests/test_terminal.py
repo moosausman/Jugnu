@@ -242,6 +242,19 @@ class OpeningManyTests(unittest.TestCase):
         self.assertEqual(seen.stdout, nasty)
         self.assertNotIn("pwned", seen.stdout.replace("echo pwned", ""))
 
+    def test_every_command_jugnu_is_told_about_exists(self):
+        """The tool's docstring is the only place the model learns what the
+        terminal understands. A command listed there that doesn't exist is a
+        failure the user sees as `no command 'mc'`."""
+        from tools.trading_tools import open_trading_terminal
+        doc = open_trading_terminal.__doc__
+        block = doc.split("Terminal commands you can pass")[1].split("Args:")[0]
+        named = [line.split()[0] for line in block.splitlines()
+                 if line.startswith("    ") and line.strip()]
+        self.assertIn("bt", named)
+        for name in named:
+            self.assertIn(name, term.COMMANDS, f"the docstring promises `{name}`")
+
     def test_startup_commands_run_before_the_prompt(self):
         ran = []
         terminal = term.Terminal.__new__(term.Terminal)

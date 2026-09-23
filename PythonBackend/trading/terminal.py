@@ -519,6 +519,7 @@ class Terminal:
                 ("sweep STRAT SYM", "every parameter combination as a heatmap"),
                 ("wf STRAT SYM [folds]", "walk forward: tune, then trade blind"),
                 ("costs STRAT SYM", "what slippage does to it"),
+                ("mc STRAT SYM", "monte carlo: the same trades, reshuffled"),
                 ("replay STRAT SYM", "watch it trade, bar by bar"),
                 ("trades · runs · y", "the trade list, saved runs, the year table"),
                 ("g", "show or hide the chart pane"),
@@ -874,6 +875,40 @@ class Terminal:
             self.para("Every trade pays the spread. A strategy that only works at zero cost "
                       "doesn't work.")
         self.job(f"costs {strategy} {symbol}", work)
+
+    def cmd_montecarlo(self, args: list[str]) -> None:
+        strategy, symbol, start, params = self._parse_run(args)
+
+        def work(entry):
+            bars = load(symbol, start=start or None)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol)
+            self.session.last_result = result
+            carlo = analysis.monte_carlo(result)
+            self.rule(f"{symbol}  {strategy}  monte carlo")
+            if not carlo.get("enough_trades"):
+                self.write(f"  {DIM}only {carlo.get('round_trips', 0)} round trips — "
+                           f"too few to shuffle.{RESET}")
+                self.para("Monte Carlo reshuffles your own trades. With a handful of them the "
+                          "spread it draws says more about the arithmetic than the strategy.")
+                return
+            rows = [("worst 5%", carlo["p05"]), ("median", carlo["p50"]),
+                    ("best 5%", carlo["p95"]), ("what happened", carlo["actual"])]
+            span = max(abs(value) for _, value in rows) or 1
+            for label, value in rows:
+                bar = (GREEN if value >= 0 else RED) + ("█" * int(abs(value) / span * 34)) + RESET
+                self.write(f"  {DIM}{label:>14}{RESET} {value * 100:>9.1f}%  {bar}")
+            self.write("")
+            losing = carlo["losing_share"] * 100
+            self.para(f"The same {carlo['round_trips']} trades, drawn again in a different order "
+                      f"{carlo['runs']:,} times. {losing:.0f}% of those orderings ended down, and "
+                      f"the middle one returned {carlo['p50'] * 100:.0f}%.")
+            if carlo["actual"] > carlo["p95"]:
+                self.para("What actually happened beat 95% of the reshuffles — the order of the "
+                          "trades flattered it. Expect less.", colour=RED)
+            elif losing > 25:
+                self.para("A quarter of the reshuffles lose money on the same trades. The edge is "
+                          "thin enough that luck decides.", colour=RED)
+        self.job(f"mc {strategy} {symbol}", work)
 
     def cmd_replay(self, args: list[str]) -> None:
         strategy, symbol, start, params = self._parse_run(args)
@@ -1711,6 +1746,7 @@ COMMANDS = {
     "sweep": Terminal.cmd_sweep,
     "wf": Terminal.cmd_walkforward, "forward": Terminal.cmd_walkforward,
     "costs": Terminal.cmd_costs,
+    "mc": Terminal.cmd_montecarlo, "carlo": Terminal.cmd_montecarlo,
     "replay": Terminal.cmd_replay,
     "trades": Terminal.cmd_trades,
     "runs": Terminal.cmd_runs,
@@ -1734,7 +1770,7 @@ COMMANDS = {
     "jobs": Terminal.cmd_jobs, "job": Terminal.cmd_job, "y": Terminal.cmd_years,
     "alert": Terminal.cmd_alert, "unalert": Terminal.cmd_unalert,
     "watch": Terminal.cmd_watch, "live": Terminal.cmd_watch,
-    "g": Terminal.cmd_graph, "graph": Terminal.cmd_graph, "chart": Terminal.cmd_graph,
+    "g": Terminal.cmd_graph, "graph": Terminal.cmd_graph,
     "tour": Terminal.cmd_tour, "start": Terminal.cmd_tour, "learn": Terminal.cmd_tour,
     "clear": Terminal.cmd_clear,
     "quit": Terminal.cmd_quit, "exit": Terminal.cmd_quit,
