@@ -265,6 +265,63 @@ def chart(series: list[tuple[list[float], str, str]], width: int, height: int,
     return out
 
 
+# Braille gives four vertical dots per character cell, so a chart drawn
+# with it has four times the resolution of one drawn with blocks -- the
+# difference between a staircase and a line.
+_BRAILLE_DOTS = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
+
+
+def braille(series: list[tuple[list[float], str]], width: int, height: int,
+            left_label: str = "", right_label: str = "",
+            low: float | None = None, high: float | None = None) -> list[str]:
+    """A line chart in braille. Each series is (values, colour); the last
+    one wins a cell they share, so the line you care about stays visible."""
+    if not series or width < 24 or height < 3:
+        return []
+    axis = 10
+    plot = max(10, width - axis - len(GUTTER))
+    columns = plot * 2
+    rows = height * 4
+
+    sampled = []
+    for values, colour in series:
+        if not values:
+            continue
+        step = max(1, len(values) / columns)
+        sampled.append(([values[min(len(values) - 1, int(i * step))] for i in range(columns)], colour))
+    if not sampled:
+        return []
+    low = min(min(v) for v, _ in sampled) if low is None else low
+    high = max(max(v) for v, _ in sampled) if high is None else high
+    span = (high - low) or 1
+
+    cells: list[list[int]] = [[0] * plot for _ in range(height)]
+    colours: list[list[str]] = [[""] * plot for _ in range(height)]
+    for values, colour in sampled:
+        previous = None
+        for x, value in enumerate(values):
+            y = int((value - low) / span * (rows - 1))
+            y = max(0, min(rows - 1, y))
+            points = [y] if previous is None else range(min(previous, y), max(previous, y) + 1)
+            for point in points:
+                row = height - 1 - point // 4
+                cells[row][x // 2] |= _BRAILLE_DOTS[3 - point % 4][x % 2]
+                colours[row][x // 2] = colour
+            previous = y
+
+    out = []
+    for index, row in enumerate(cells):
+        label = money(high - span * index / max(1, height - 1))
+        line = "".join((colours[index][i] + chr(0x2800 + bits) + RESET) if bits else " "
+                       for i, bits in enumerate(row))
+        out.append(f"{GUTTER}{FAINT}{label:>{axis - 2}} │{RESET}{line}")
+    out.append(f"{GUTTER}{FAINT}{' ' * (axis - 2)} └{'─' * plot}{RESET}")
+    if left_label or right_label:
+        gap = max(1, plot - len(left_label) - len(right_label))
+        out.append(f"{GUTTER}{FAINT}{' ' * axis}{left_label}{' ' * gap}{right_label}{RESET}")
+    return out
+
+
 def legend(items: list[tuple[str, str, str]]) -> str:
     """(mark, colour, label) …"""
     return GUTTER + "   ".join(f"{colour}{mark}{RESET} {FAINT}{label}{RESET}"

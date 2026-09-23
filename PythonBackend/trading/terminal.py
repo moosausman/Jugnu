@@ -33,7 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from . import (alerts, analysis, authoring, explain, jobs, metrics, paper, portfolio, quotes,
-               remote, render, risk, screen, sources, store, strategies, ui)
+               remote, render, risk, screen, signals, sources, store, strategies, ui)
 from .data import DataError, load
 from .ui import GUTTER, fit, money, percent, visible_width as visible
 
@@ -68,6 +68,10 @@ class Session:
     status: str = ""
     history: list[str] = field(default_factory=list)
     last_portfolio: dict | None = None
+    # The chart pane at the top: set by any command that draws something,
+    # so the picture stays on screen while you keep working under it.
+    chart: dict | None = None
+    show_chart: bool = True
     # Where heavy commands run. Defaults to the Jugnu account when it's up:
     # that's a whole second machine sitting idle, it keeps long sweeps off
     # the session you're typing in, and you never have to switch user.
@@ -142,6 +146,7 @@ class Terminal:
         strip = self._jobs_strip(width)
         if strip:
             rows.append(strip)
+        rows += self._chart_pane(width, height)
         rows.append(f"{FAINT}{'─' * width}{RESET}")
 
         work_height = height - len(rows) - 2
@@ -216,6 +221,39 @@ class Terminal:
             b = right[i] if i < len(right) else ""
             rows.append(fit(a, half) + f"{FAINT}│{RESET} " + fit(b, width - half - 2))
         return rows
+
+    def _chart_pane(self, width: int, height: int) -> list[str]:
+        """The graph that stays put. Commands feed it; the work area scrolls
+        underneath."""
+        chart = self.session.chart
+        if not chart or not self.session.show_chart or height < 22:
+            return []
+        pane = max(6, min(14, (height - 14) // 2))
+        series = [(values, colour) for values, colour, _ in chart["series"] if values]
+        if not series:
+            return []
+        rows = [f"{ui.GUTTER}{CLAY}▌{RESET}{INK} {chart['title']}{RESET}"
+                f"  {FAINT}{'  '.join(label for _, _, label in chart['series'] if label)}{RESET}"]
+        rows += ui.braille(series, width, pane, chart.get("left", ""), chart.get("right", ""))
+        return rows
+
+    def plot(self, title: str, series: list[tuple[list[float], str, str]],
+             left: str = "", right: str = "") -> None:
+        self.session.chart = {"title": title, "series": series, "left": left, "right": right}
+        self.session.show_chart = True
+        self.dirty = True
+
+    def cmd_graph(self, args: list[str]) -> None:
+        if args and args[0] in ("off", "hide"):
+            self.session.show_chart = False
+            self.write(f"{ui.GUTTER}{DIM}chart pane hidden · `g` brings it back{RESET}")
+            return
+        if self.session.chart is None:
+            self.write(f"{ui.GUTTER}{DIM}nothing plotted yet — `ch AAPL` or any backtest fills it"
+                       f"{RESET}")
+            return
+        self.session.show_chart = not self.session.show_chart if not args else True
+        self.dirty = True
 
     def _ticker_cell(self, quote: quotes.Quote) -> str:
         if quote.error or not quote.price:
@@ -458,6 +496,7 @@ class Terminal:
                 ("screen [filters]", "scan the watchlist: `screen rsi<35 vol>2`"),
                 ("corr [SYM…]", "how they move together"),
                 ("alert NVDA < 200", "tell me when · `alert` lists, `unalert N` removes"),
+                ("signals", "what every strategy says right now, and what changed"),
             ]),
             ("research", [
                 ("bt STRAT SYM [year]", "backtest against buy & hold"),
@@ -469,6 +508,7 @@ class Terminal:
                 ("costs STRAT SYM", "what slippage does to it"),
                 ("replay STRAT SYM", "watch it trade, bar by bar"),
                 ("trades · runs · y", "the trade list, saved runs, the year table"),
+                ("g", "show or hide the chart pane"),
             ]),
             ("paper", [
                 ("paper start STRAT SYM", "a simulated account on live prices"),
@@ -530,8 +570,10 @@ class Terminal:
         def work():
             bars = load(symbol)[-days:]
             closes = [b.close for b in bars]
+            self.plot(f"{symbol} · {len(bars)} days",
+                      [(closes, GREEN if closes[-1] >= closes[0] else RED, symbol)],
+                      bars[0].date, bars[-1].date)
             self.rule(f"{symbol} · {len(bars)} days")
-            self.write(_price_chart(closes, bars[0].date, bars[-1].date, width=_width() - 12))
             change = closes[-1] / closes[0] - 1
             self.write(f"  {DIM}{bars[0].date} → {bars[-1].date}{RESET}   {pct(change * 100)}"
                        f"   {DIM}low{RESET} {money(min(closes))}  {DIM}high{RESET} {money(max(closes))}")
@@ -646,11 +688,14 @@ class Terminal:
         for note in notes:
             self.para(note, colour=AMBER, marker="⚠")
 
+        self.plot(f"{result.symbol} · {result.strategy}",
+                  [(result.benchmark, FAINT, "buy & hold"), (result.equity, CLAY, "strategy")],
+                  result.dates[0], result.dates[-1])
         self.write("")
-        self.write(*ui.chart([(result.benchmark, "·", FAINT), (result.equity, "█", CLAY)],
-                             _width(), self._chart_height(),
-                             result.dates[0], result.dates[-1]))
-        self.write(ui.legend([("█", CLAY, "strategy"), ("·", FAINT, "buy & hold")]))
+        self.write(*ui.braille([(result.benchmark, FAINT), (result.equity, CLAY)],
+                               _width(), self._chart_height(),
+                               result.dates[0], result.dates[-1]))
+        self.write(ui.legend([("▬", CLAY, "strategy"), ("▬", FAINT, "buy & hold")]))
 
         if costs:
             self.write("")
@@ -1047,11 +1092,14 @@ class Terminal:
                      f"{RED}{s['max_drawdown'] * 100:.0f}%{RESET}", str(s["trades"])]
                     for s in result["sleeves"]],
                    aligns="<>>>>>", trim=[5, 4])
+        self.plot("portfolio",
+                  [(result["benchmark"], FAINT, "equal-weight hold"), (result["equity"], CLAY, "portfolio")],
+                  result["dates"][0], result["dates"][-1])
         self.write("")
-        self.write(*ui.chart([(result["benchmark"], "·", FAINT), (result["equity"], "█", CLAY)],
-                             _width(), self._chart_height(),
-                             result["dates"][0], result["dates"][-1]))
-        self.write(ui.legend([("█", CLAY, "portfolio"), ("·", FAINT, "equal-weight hold")]), "")
+        self.write(*ui.braille([(result["benchmark"], FAINT), (result["equity"], CLAY)],
+                               _width(), self._chart_height(),
+                               result["dates"][0], result["dates"][-1]))
+        self.write(ui.legend([("▬", CLAY, "portfolio"), ("▬", FAINT, "equal-weight hold")]), "")
         self._correlation_table(result["correlation"])
         for note in result["notes"]:
             self.para(note)
@@ -1210,6 +1258,37 @@ class Terminal:
             if not filters:
                 self.para("filter it: `screen rsi<35` · `screen vol>2` · "
                           "`screen near_high>0.97 trend=1`", colour=FAINT)
+
+    def cmd_signals(self, args: list[str]) -> None:
+        """What every strategy says about every symbol, right now."""
+        names = [a.lower() for a in args if a.lower() in strategies.REGISTRY]
+        symbols = [a.upper() for a in args if a.lower() not in strategies.REGISTRY] or \
+            quotes.watchlist() + ["BTC-USD"]
+
+        def work(entry):
+            rows = signals.scan(sorted(set(symbols)), names or None)
+            self.rule("signals  what each strategy says today")
+            table = []
+            for row in rows:
+                if "error" in row:
+                    table.append([f"{INK}{row['symbol']}{RESET}", "", f"{FAINT}{row['error']}{RESET}", ""])
+                    continue
+                colour = {"enter": GREEN, "hold": INK, "out": FAINT}[row["state"]]
+                table.append([
+                    f"{INK}{row['symbol']}{RESET}",
+                    f"{DIM}{row['strategy']}{RESET}",
+                    f"{colour}{row['state']}{RESET}",
+                    (f"{AMBER}changed from {row['was']}{RESET}" if row["changed"] else ""),
+                    ui.money(row["price"]),
+                ])
+            self.table(["symbol", "strategy", "says", "", "price"], table,
+                       aligns="<<<<>", trim=[4])
+            self.para(signals.summary([r for r in rows if "error" not in r]),
+                      colour=INK if any(r.get("changed") for r in rows) else DIM)
+            self.para("These are the same decisions a paper account executes for you: "
+                      "`paper start <strategy> <symbol>` and Jugnu reports it daily.",
+                      colour=FAINT)
+        self.job("signals", work)
 
     def cmd_correlation(self, args: list[str]) -> None:
         symbols = [a.upper() for a in args] or (quotes.watchlist() + ["SPY", "BTC-USD"])
@@ -1576,12 +1655,14 @@ COMMANDS = {
     "vs": Terminal.cmd_compare, "compare": Terminal.cmd_compare,
     "screen": Terminal.cmd_screen, "scan": Terminal.cmd_screen,
     "corr": Terminal.cmd_correlation,
+    "signals": Terminal.cmd_signals, "algo": Terminal.cmd_signals,
     "fa": Terminal.cmd_fundamentals, "fundamentals": Terminal.cmd_fundamentals,
     "opt": Terminal.cmd_options, "options": Terminal.cmd_options,
     "source": Terminal.cmd_source, "sources": Terminal.cmd_source,
     "on": Terminal.cmd_where, "where": Terminal.cmd_where,
     "jobs": Terminal.cmd_jobs, "job": Terminal.cmd_job, "y": Terminal.cmd_years,
     "alert": Terminal.cmd_alert, "unalert": Terminal.cmd_unalert,
+    "g": Terminal.cmd_graph, "graph": Terminal.cmd_graph, "chart": Terminal.cmd_graph,
     "tour": Terminal.cmd_tour, "start": Terminal.cmd_tour, "learn": Terminal.cmd_tour,
     "clear": Terminal.cmd_clear,
     "quit": Terminal.cmd_quit, "exit": Terminal.cmd_quit,

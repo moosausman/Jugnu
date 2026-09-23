@@ -46,7 +46,7 @@ enum Theme {
         static let initial = CGSize(width: 380, height: 540)
         static let min = CGSize(width: 340, height: 420)
         static let max = CGSize(width: 760, height: 1100)
-        static let settings = CGSize(width: 560, height: 520)
+        static let settings = CGSize(width: 680, height: 540)
     }
 
     // MARK: - Spacing

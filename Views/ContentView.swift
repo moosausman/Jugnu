@@ -122,23 +122,39 @@ private struct HeaderView: View {
             }
 
             Menu {
-                Picker("Model", selection: Binding(
-                    get: { SettingsStore.ModelMode(rawValue: appState.modelMode) ?? .api },
-                    set: { appState.setModelMode($0) })) {
-                    ForEach(SettingsStore.ModelMode.allCases) { mode in
-                        Text(Self.menuLabel(mode)).tag(mode)
-                    }
+                Section("Windows") {
+                    Button("Jugnu's Desk") { WindowManager.shared.showDesk() }
+                        .keyboardShortcut("d", modifiers: [.command, .shift])
+                    Button("Trading Terminal") { WindowManager.shared.openTradingTerminal() }
+                        .keyboardShortcut("t", modifiers: [.command, .shift])
+                    Button("Activity") { showActivity.toggle() }
+                        .keyboardShortcut("j", modifiers: .command)
                 }
-                .pickerStyle(.inline)
+                Section("This conversation") {
+                    Button("New conversation") { appState.clear() }
+                        .keyboardShortcut("n", modifiers: .command)
+                        .disabled(appState.thinking || appState.messages.isEmpty)
+                    Button("Daily Review") { appState.requestDailyReview() }
+                        .disabled(appState.thinking)
+                }
+                Section("Where Jugnu thinks") {
+                    Picker("Model", selection: Binding(
+                        get: { SettingsStore.ModelMode(rawValue: appState.modelMode) ?? .api },
+                        set: { appState.setModelMode($0) })) {
+                        ForEach(SettingsStore.ModelMode.allCases) { mode in
+                            Text(Self.menuLabel(mode)).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
                 Divider()
-                Button("Jugnu's Desk") { WindowManager.shared.showDesk() }
-                    .keyboardShortcut("d", modifiers: [.command, .shift])
-                Button("Trading Terminal") { WindowManager.shared.openTradingTerminal() }
-                    .keyboardShortcut("t", modifiers: [.command, .shift])
                 Button("Settings…") { WindowManager.shared.showSettings() }
-                Button("Daily Review") { appState.requestDailyReview() }
+                    .keyboardShortcut(",", modifiers: .command)
+                // Jugnu's engine is a Python process started at launch: after
+                // an update it keeps running the code it loaded, which looks
+                // exactly like a fix that didn't work.
+                Button("Restart engine") { appState.restartBackend() }
                     .disabled(appState.thinking)
-                Divider()
                 Button("Hide Jugnu") { WindowManager.shared.hideChat() }
             } label: {
                 Image(systemName: "ellipsis")

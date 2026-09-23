@@ -32,25 +32,27 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            tabBar
-                .zIndex(1)   // keeps scrolled content from taking the tabs' clicks
-            Rectangle().fill(Theme.border).frame(height: 1)
-            ScrollView {
-                Group {
-                    switch pane {
-                    case .general: GeneralPane(settings: settings)
-                    case .autonomy: AutonomyPane(appState: appState)
-                    case .models: ModelsPane(settings: settings, appState: appState)
-                    case .privacy: PrivacyPane(appState: appState)
-                    case .about: AboutPane(appState: appState)
+        HStack(spacing: 0) {
+            sidebar
+            Rectangle().fill(Theme.border).frame(width: 1)
+            VStack(spacing: 0) {
+                paneHeader
+                ScrollView {
+                    Group {
+                        switch pane {
+                        case .general: GeneralPane(settings: settings)
+                        case .autonomy: AutonomyPane(appState: appState)
+                        case .models: ModelsPane(settings: settings, appState: appState)
+                        case .privacy: PrivacyPane(appState: appState)
+                        case .about: AboutPane(appState: appState)
+                        }
                     }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 22)
-                .padding(.vertical, 18)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                if needsRestart { restartBar }
             }
-            if needsRestart { restartBar }
         }
         .frame(width: Theme.WindowSize.settings.width, height: Theme.WindowSize.settings.height)
         .background(Theme.windowBackground)
@@ -60,26 +62,60 @@ struct SettingsView: View {
         .ignoresSafeArea()
     }
 
-    private var tabBar: some View {
-        HStack(spacing: 2) {
+    /// A list down the side rather than tabs across the top: five names in
+    /// a column are read at a glance, and each pane gets the full height.
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Settings")
+                .font(Theme.text(12.5, weight: .semibold))
+                .foregroundStyle(Theme.inkDim)
+                .padding(.leading, 12)
+                .padding(.top, 34)
+                .padding(.bottom, 10)
             ForEach(Pane.allCases) { p in
                 Button { pane = p } label: {
-                    VStack(spacing: 3) {
-                        Image(systemName: p.symbol).font(.system(size: 15))
-                            .frame(height: 18)
-                        Text(p.rawValue).font(Theme.text(10.5, weight: .medium))
+                    HStack(spacing: 9) {
+                        Image(systemName: p.symbol)
+                            .font(.system(size: 12.5))
+                            .frame(width: 18)
+                        Text(p.rawValue).font(Theme.text(12.5, weight: pane == p ? .medium : .regular))
+                        Spacer(minLength: 0)
                     }
-                    .foregroundStyle(pane == p ? Theme.clay : Theme.inkDim)
-                    .frame(width: 70, height: 44)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(pane == p ? Color.white.opacity(0.07) : .clear))
+                    .foregroundStyle(pane == p ? Theme.ink : Theme.inkDim)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(pane == p ? Color.white.opacity(0.08) : .clear))
+                    .overlay(alignment: .leading) {
+                        if pane == p {
+                            RoundedRectangle(cornerRadius: 1).fill(Theme.clay)
+                                .frame(width: 2.5, height: 15)
+                                .offset(x: -3)
+                        }
+                    }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
+            Spacer()
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 30)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 8)
+        .frame(width: 148)
+        .background(Theme.panel.opacity(0.5))
+    }
+
+    /// The pane's own title, so the window says where you are once you've
+    /// scrolled away from the top.
+    private var paneHeader: some View {
+        HStack {
+            Text(pane.rawValue)
+                .font(Theme.text(15, weight: .semibold))
+                .foregroundStyle(Theme.ink)
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 34)
+        .padding(.bottom, 12)
     }
 
     private var restartBar: some View {

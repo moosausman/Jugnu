@@ -9,6 +9,12 @@ struct InputBarView: View {
     @FocusState private var focused: Bool
     @StateObject private var speech = SpeechInput()
 
+    private var placeholder: String {
+        if speech.isListening { return "Listening… let go of ⌥ to send" }
+        if appState.targetAccount == "agent" { return "Message Jugnu · runs on Jugnu" }
+        return SettingsStore.shared.holdOptionToTalk ? "Message Jugnu, or hold ⌥ to talk" : "Message Jugnu"
+    }
+
     private var canSend: Bool {
         !appState.thinking && appState.statusLabel != "starting"
             && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -44,9 +50,7 @@ struct InputBarView: View {
         HStack(alignment: .bottom, spacing: 6) {
             AccountChip(appState: appState)
                 .padding(.bottom, 3)
-            TextField(speech.isListening ? "Listening… let go of ⌥ to send"
-                      : (SettingsStore.shared.holdOptionToTalk ? "Message Jugnu, or hold ⌥ to talk" : "Message Jugnu"),
-                      text: $text, axis: .vertical)
+            TextField(placeholder, text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(Theme.text(13.5))
                 .foregroundStyle(Theme.ink)
@@ -86,7 +90,8 @@ struct InputBarView: View {
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Theme.panel))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(focused ? Theme.clay.opacity(0.45) : Theme.borderStrong, lineWidth: 1)
+                .stroke(appState.targetAccount == "agent" ? Theme.clay.opacity(0.55)
+                        : (focused ? Theme.clay.opacity(0.45) : Theme.borderStrong), lineWidth: 1)
         )
         .animation(Theme.Motion.snappy, value: focused)
         .padding(.horizontal, 12)
@@ -164,47 +169,69 @@ private struct AttachmentCard: View {
 }
 
 /// Where the request runs: your account, the Jugnu account, or Auto.
+///
+/// It used to be a grey chip saying "Auto" that nobody would read as a
+/// switch. It now names the account, carries its own icon, and turns clay
+/// when work is going somewhere other than here -- because "which machine
+/// did that happen on" is the one thing you can't afford to get wrong.
 private struct AccountChip: View {
     @ObservedObject var appState: AppState
     @ObservedObject private var settings = SettingsStore.shared
     @State private var hovering = false
 
+    private var elsewhere: Bool {
+        appState.targetAccount == "agent"
+            || (appState.targetAccount == "auto" && settings.useAgentAccountByDefault)
+    }
+
     private var label: String {
         switch appState.targetAccount {
         case "primary": return "You"
         case "agent": return "Jugnu"
-        default: return "Auto"
+        default: return settings.useAgentAccountByDefault ? "Jugnu" : "You"
         }
     }
 
-    private var picked: Bool { appState.targetAccount != "auto" }
+    private var symbol: String {
+        elsewhere ? "desktopcomputer" : "person.crop.circle"
+    }
 
     var body: some View {
         Menu {
             Picker("Run on", selection: $appState.targetAccount) {
-                Text("Auto — \(settings.useAgentAccountByDefault ? "Jugnu account" : "your account") by default")
+                Label("This account (you)", systemImage: "person.crop.circle").tag("primary")
+                Label("The Jugnu account", systemImage: "desktopcomputer").tag("agent")
+                Divider()
+                Text("Auto — \(settings.useAgentAccountByDefault ? "the Jugnu account" : "this account")")
                     .tag("auto")
-                Text("Your account").tag("primary")
-                Text("Jugnu account").tag("agent")
             }
             .pickerStyle(.inline)
         } label: {
-            HStack(spacing: 3) {
-                Image(systemName: appState.targetAccount == "agent" ? "person.crop.square.fill" : "person.crop.circle")
-                    .font(.system(size: 10.5))
-                Text(label).font(Theme.text(11, weight: .medium))
+            HStack(spacing: 5) {
+                Image(systemName: symbol).font(.system(size: 11, weight: .medium))
+                Text(label).font(Theme.text(11.5, weight: .medium))
+                if appState.targetAccount == "auto" {
+                    Text("auto").font(Theme.text(9.5)).foregroundStyle(Theme.inkFaint)
+                }
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(Theme.inkFaint)
             }
-            .foregroundStyle(picked ? Theme.clay : (hovering ? Theme.inkDim : Theme.inkFaint))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(picked ? Theme.clay.opacity(0.14) : Color.white.opacity(hovering ? 0.08 : 0.05)))
+            .foregroundStyle(elsewhere ? Theme.clay : (hovering ? Theme.ink : Theme.inkDim))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(elsewhere ? Theme.clay.opacity(0.16)
+                                       : Color.white.opacity(hovering ? 0.09 : 0.05)))
+            .overlay(Capsule().stroke(elsewhere ? Theme.clay.opacity(0.45) : Color.clear, lineWidth: 1))
             .contentShape(Capsule())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .onHover { hovering = $0 }
-        .help("Which Mac account this runs on")
+        .animation(Theme.Motion.snappy, value: elsewhere)
+        .help(elsewhere ? "Runs on the Jugnu account — watch it with ⌘⇧D"
+              : "Runs on this account")
     }
 }
 

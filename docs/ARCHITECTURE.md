@@ -133,6 +133,20 @@ moves down without returning to column 0, which turned the screen into a
 staircase of fragments. The frame is one column narrower than the window,
 because writing into the last cell makes terminals wrap.
 
+**The chart pane.** A braille line chart (four dots per cell, so curves
+read as curves) sits above the work area and holds the last thing plotted
+-- a price series from `ch`, an equity curve from `bt` or `pf` -- while you
+keep working underneath. `g` hides or shows it; it suppresses itself in a
+window under 22 rows.
+
+**Signals (`signals.py`) are the algorithmic half.** For every symbol and
+strategy it asks the strategy twice, once as if flat and once as if already
+holding, because most rules answer differently depending on where you stand
+("buy under 30, sell over 60" holds through the middle). That gives enter /
+hold / out, plus what it said yesterday, so the only line worth acting on
+-- what changed -- is marked. Paper accounts execute exactly these
+decisions on live prices with imaginary money.
+
 **It fits the window.** `ui.py` holds the terminal's typography: every
 panel is built from `rule`, `stats`, `table`, `note`, `chart`, `bar`, and
 each takes the window width and respects it. Tables shed their least

@@ -10,7 +10,7 @@ import math
 import time
 import unittest
 
-from trading import alerts, jobs, portfolio, quotes, risk, screen, sources
+from trading import alerts, jobs, portfolio, quotes, risk, screen, signals, sources
 from trading.analysis import backtest
 from trading.data import Bar
 
@@ -231,6 +231,44 @@ class AlertTests(unittest.TestCase):
             self.assertEqual(alerts.check(), [])          # disarmed, so no repeat
         finally:
             alerts._value = original
+
+
+class SignalTests(unittest.TestCase):
+    """What a strategy says right now -- the algo view. A rule that answers
+    differently depending on whether you already hold it (most do) has to be
+    asked both ways, or the answer is meaningless."""
+
+    def setUp(self):
+        import trading.signals as module
+        self.module = module
+        self.original = module.load
+        module.load = lambda symbol, interval="1d", **kw: bars_from(
+            rising(300) if symbol == "UP" else list(reversed(rising(300))))
+
+    def tearDown(self):
+        self.module.load = self.original
+
+    def test_a_trend_follower_is_in_on_the_way_up_and_out_on_the_way_down(self):
+        up = {row["strategy"]: row for row in signals.for_symbol("UP", ["sma"])}
+        down = {row["strategy"]: row for row in signals.for_symbol("DOWN", ["sma"])}
+        self.assertIn(up["sma"]["state"], ("enter", "hold"))
+        self.assertEqual(down["sma"]["state"], "out")
+
+    def test_every_row_says_what_it_said_yesterday(self):
+        for row in signals.for_symbol("UP", ["sma", "breakout"]):
+            self.assertIn(row["was"], ("enter", "hold", "out"))
+            self.assertEqual(row["changed"], row["state"] != row["was"])
+
+    def test_a_bad_symbol_is_reported_not_raised(self):
+        self.module.load = lambda *a, **k: (_ for _ in ()).throw(ValueError("nope"))
+        rows = signals.scan(["ZZZZ"])
+        self.assertIn("error", rows[0])
+
+    def test_the_summary_says_plainly_when_nothing_changed(self):
+        self.assertIn("Nothing changed", signals.summary([{"changed": False, "state": "hold"}]))
+        text = signals.summary([{"changed": True, "state": "enter", "strategy": "sma",
+                                 "symbol": "AAPL"}])
+        self.assertIn("would open", text)
 
 
 class SourceTests(unittest.TestCase):
