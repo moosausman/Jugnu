@@ -72,6 +72,8 @@ class Session:
     # so the picture stays on screen while you keep working under it.
     chart: dict | None = None
     show_chart: bool = True
+    # (symbol, interval) while a live chart is running.
+    watching: tuple | None = None
     # Where heavy commands run. Defaults to the Jugnu account when it's up:
     # that's a whole second machine sitting idle, it keeps long sweeps off
     # the session you're typing in, and you never have to switch user.
@@ -79,7 +81,9 @@ class Session:
 
 
 class Terminal:
-    REFRESH = 10.0            # seconds between quote refreshes
+    REFRESH = 10.0            # seconds between quote refreshes while you're here
+    IDLE_REFRESH = 90.0       # ...and once you've stopped typing
+    IDLE_AFTER = 180.0
 
     def __init__(self):
         self.session = Session()
@@ -94,6 +98,8 @@ class Terminal:
         # to be attributed as it happens.
         self.current = threading.local()
         self.last_alert_check = 0.0
+        self.last_watch = 0.0
+        self.last_key = time.time()
         self.dirty = True
         self.last_refresh = 0.0
         self.markets = list(quotes.DEFAULT_MARKETS)
@@ -307,6 +313,7 @@ class Terminal:
     # -- input -------------------------------------------------------------
 
     def key(self, char: str) -> None:
+        self.last_key = time.time()
         if char in ("\r", "\n"):
             command, self.buffer = self.buffer.strip(), ""
             self.history_index = 0
@@ -389,7 +396,8 @@ class Terminal:
 
     def refresh_quotes(self) -> None:
         symbols = self.markets + quotes.watchlist()
-        self.jobs.submit(lambda: (quotes.many(symbols, max_age=self.REFRESH - 1), self._touch()))
+        age = self.REFRESH - 1 if time.time() - self.last_key < self.IDLE_AFTER else self.IDLE_REFRESH
+        self.jobs.submit(lambda: (quotes.many(symbols, max_age=age), self._touch()))
 
     def _touch(self) -> None:
         self.dirty = True
@@ -401,9 +409,13 @@ class Terminal:
             sys.stdout.write("\x1b[?1049h\x1b[?25h\x1b[2J")
             self.banner()
             while self.running:
-                if time.time() - self.last_refresh > self.REFRESH:
+                # Back off when nobody's typing: a terminal left open all
+                # day shouldn't poll the network every ten seconds forever.
+                idle = time.time() - self.last_key > self.IDLE_AFTER
+                if time.time() - self.last_refresh > (self.IDLE_REFRESH if idle else self.REFRESH):
                     self.last_refresh = time.time()
                     self.refresh_quotes()
+                self._tick_watch()
                 if time.time() - self.last_alert_check > 60:
                     self.last_alert_check = time.time()
                     self.jobs.submit(self._check_alerts)
@@ -490,7 +502,8 @@ class Terminal:
         groups = [
             ("prices", [
                 ("q SYM", "quote, day's range, sparkline"),
-                ("ch SYM [days]", "price chart"),
+                ("ch SYM [5m] [bars]", "price chart · minute bars for day trading"),
+                ("watch SYM [1m]", "a live chart that refreshes itself"),
                 ("wl [add|rm] SYM", "watchlist"),
                 ("mkt [SYM…]", "what sits in the markets panel"),
                 ("screen [filters]", "scan the watchlist: `screen rsi<35 vol>2`"),
@@ -564,20 +577,78 @@ class Terminal:
                        f"  {FAINT}recent{RESET}")
 
     def cmd_chart(self, args: list[str]) -> None:
+        """ch AAPL · ch AAPL 5m · ch BTC-USD 1m 240   (bar size, then how many)"""
+        from .data import BAR_MINUTES
         symbol = (args[0] if args else self.session.symbol).upper()
-        days = int(args[1]) if len(args) > 1 and args[1].isdigit() else 180
+        interval = next((a for a in args[1:] if a in BAR_MINUTES), "1d")
+        count = next((int(a) for a in args[1:] if a.isdigit()), 180 if interval == "1d" else 240)
         self.session.symbol = symbol
-        def work():
-            bars = load(symbol)[-days:]
+
+        def work(entry):
+            bars = load(symbol, interval)[-count:]
             closes = [b.close for b in bars]
-            self.plot(f"{symbol} · {len(bars)} days",
-                      [(closes, GREEN if closes[-1] >= closes[0] else RED, symbol)],
-                      bars[0].date, bars[-1].date)
-            self.rule(f"{symbol} · {len(bars)} days")
+            span = bars[0].date if interval == "1d" else bars[0].stamp
+            until = bars[-1].date if interval == "1d" else bars[-1].stamp
+            self.plot(f"{symbol} · {interval} · {len(bars)} bars",
+                      [(closes, GREEN if closes[-1] >= closes[0] else RED, symbol)], span, until)
+            self.rule(f"{symbol}  {interval}  {len(bars)} bars")
             change = closes[-1] / closes[0] - 1
-            self.write(f"  {DIM}{bars[0].date} → {bars[-1].date}{RESET}   {pct(change * 100)}"
-                       f"   {DIM}low{RESET} {money(min(closes))}  {DIM}high{RESET} {money(max(closes))}")
-        self.background(f"{symbol} chart…", work)
+            self.stats([
+                ("last", f"{INK}{ui.money(closes[-1])}{RESET}"),
+                ("change", ui.percent(change * 100)),
+                ("high", ui.money(max(b.high for b in bars))),
+                ("low", ui.money(min(b.low for b in bars))),
+                ("from", f"{DIM}{span}{RESET}"),
+                ("to", f"{DIM}{until}{RESET}"),
+            ])
+            if interval != "1d":
+                self.para(f"`watch {symbol} {interval}` keeps this one live.", colour=FAINT)
+        self.job(f"chart {symbol} {interval}", work)
+
+    def cmd_watch(self, args: list[str]) -> None:
+        """A live chart: the pane refreshes itself until you stop it."""
+        from .data import BAR_MINUTES
+        if args and args[0] in ("off", "stop"):
+            self.session.watching = None
+            self.write(f"{ui.GUTTER}{DIM}stopped watching{RESET}")
+            return
+        symbol = (args[0] if args else self.session.symbol).upper()
+        interval = next((a for a in args[1:] if a in BAR_MINUTES), "1m")
+        self.session.symbol = symbol
+        self.session.watching = (symbol, interval)
+        self.write(f"{ui.GUTTER}{GREEN}watching{RESET} {INK}{symbol}{RESET} {DIM}{interval} bars · "
+                   f"the chart refreshes itself · `watch off` stops{RESET}")
+        self._tick_watch(force=True)
+
+    def _tick_watch(self, force: bool = False) -> None:
+        """Called from the main loop; refreshes the live chart on its own
+        clock so the pane is never more stale than one bar."""
+        watching = self.session.watching
+        if not watching:
+            return
+        from .data import BAR_MINUTES
+        symbol, interval = watching
+        every = max(15.0, min(60.0, BAR_MINUTES.get(interval, 1) * 20))
+        if not force and time.time() - self.last_watch < every:
+            return
+        self.last_watch = time.time()
+
+        def work():
+            from .data import recent
+            try:
+                bars = recent(symbol, interval, 240)
+            except DataError:
+                return
+            if not bars:
+                return
+            closes = [b.close for b in bars]
+            quote = quotes.one(symbol, max_age=10)
+            change = quote.change_pct if quote.price else (closes[-1] / closes[0] - 1) * 100
+            self.plot(f"{symbol} · {interval} · live  {ui.money(closes[-1])}  "
+                      + ui.percent(change),
+                      [(closes, GREEN if change >= 0 else RED, time.strftime("%H:%M:%S"))],
+                      bars[0].stamp, bars[-1].stamp)
+        self.jobs.submit(work)
 
     def cmd_watchlist(self, args: list[str]) -> None:
         if args and args[0] in ("add", "+"):
@@ -1634,7 +1705,7 @@ COMMANDS = {
     "help": Terminal.cmd_help, "?": Terminal.cmd_help,
     "q": Terminal.cmd_quote, "quote": Terminal.cmd_quote,
     "ch": Terminal.cmd_chart, "chart": Terminal.cmd_chart,
-    "wl": Terminal.cmd_watchlist, "watch": Terminal.cmd_watchlist,
+    "wl": Terminal.cmd_watchlist, "list": Terminal.cmd_watchlist,
     "mkt": Terminal.cmd_markets, "markets": Terminal.cmd_markets,
     "bt": Terminal.cmd_backtest, "backtest": Terminal.cmd_backtest,
     "sweep": Terminal.cmd_sweep,
@@ -1662,6 +1733,7 @@ COMMANDS = {
     "on": Terminal.cmd_where, "where": Terminal.cmd_where,
     "jobs": Terminal.cmd_jobs, "job": Terminal.cmd_job, "y": Terminal.cmd_years,
     "alert": Terminal.cmd_alert, "unalert": Terminal.cmd_unalert,
+    "watch": Terminal.cmd_watch, "live": Terminal.cmd_watch,
     "g": Terminal.cmd_graph, "graph": Terminal.cmd_graph, "chart": Terminal.cmd_graph,
     "tour": Terminal.cmd_tour, "start": Terminal.cmd_tour, "learn": Terminal.cmd_tour,
     "clear": Terminal.cmd_clear,

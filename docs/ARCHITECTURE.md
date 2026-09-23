@@ -133,6 +133,16 @@ moves down without returning to column 0, which turned the screen into a
 staircase of fragments. The frame is one column narrower than the window,
 because writing into the last cell makes terminals wrap.
 
+**Intraday and live.** `data.py` serves 1m/5m/15m/30m/1h as well as daily,
+within each source's limits (Yahoo: 7 days of minute bars, 60 of five;
+Binance: whatever you ask, but paged from a recent start -- paging from
+2017 meant a 5-minute BTC chart that ended in 2019). `recent()` fetches
+only the tail for live updates, because re-pulling thirty days of minute
+bars every tick is forty round trips. `watch SYM 1m` keeps the pane
+refreshing on a clock scaled to the bar size. Annualising knows that a
+crypto day is 1440 minutes and a US session is 390, so Sharpe on a
+5-minute series isn't off by a factor of four.
+
 **The chart pane.** A braille line chart (four dots per cell, so curves
 read as curves) sits above the work area and holds the last thing plotted
 -- a price series from `ch`, an equity curve from `bt` or `pf` -- while you

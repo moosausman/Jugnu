@@ -47,9 +47,12 @@ struct InputBarView: View {
     }
 
     private var field: some View {
-        HStack(alignment: .bottom, spacing: 6) {
+        // One control, not a capsule floating inside a box: the account
+        // segment is the full height of the bar, divided by a hairline,
+        // and everything shares the same radius.
+        HStack(alignment: .center, spacing: 0) {
             AccountChip(appState: appState)
-                .padding(.bottom, 3)
+            Rectangle().fill(Theme.border).frame(width: 1, height: 22)
             TextField(placeholder, text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(Theme.text(13.5))
@@ -57,8 +60,9 @@ struct InputBarView: View {
                 .lineLimit(1...6)
                 .focused($focused)
                 .onSubmit(send)
-                .padding(.vertical, 5)
-                .padding(.leading, 4)
+                .padding(.leading, 11)
+                .padding(.trailing, 4)
+                .padding(.vertical, 10)
 
             if !appState.thinking && text.isEmpty || speech.isListening {
                 RoundButton(symbol: speech.isListening ? "waveform" : "mic",
@@ -75,6 +79,7 @@ struct InputBarView: View {
                     appState.cancelRun()
                 }
                 .keyboardShortcut(".", modifiers: .command)
+                .padding(.trailing, 5)
             } else {
                 RoundButton(symbol: "arrow.up", fill: canSend ? Theme.clay : Color.white.opacity(0.07),
                             tint: canSend ? Color(hex: 0x1A120C) : Theme.inkFaint, help: "Send (Return)",
@@ -82,14 +87,12 @@ struct InputBarView: View {
                     send()
                 }
                 .disabled(!canSend)
+                .padding(.trailing, 5)
             }
         }
-        .padding(.leading, 10)
-        .padding(.trailing, 6)
-        .padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Theme.panel))
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.panel))
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(appState.targetAccount == "agent" ? Theme.clay.opacity(0.55)
                         : (focused ? Theme.clay.opacity(0.45) : Theme.borderStrong), lineWidth: 1)
         )
@@ -218,12 +221,16 @@ private struct AccountChip: View {
                     .foregroundStyle(Theme.inkFaint)
             }
             .foregroundStyle(elsewhere ? Theme.clay : (hovering ? Theme.ink : Theme.inkDim))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Capsule().fill(elsewhere ? Theme.clay.opacity(0.16)
-                                       : Color.white.opacity(hovering ? 0.09 : 0.05)))
-            .overlay(Capsule().stroke(elsewhere ? Theme.clay.opacity(0.45) : Color.clear, lineWidth: 1))
-            .contentShape(Capsule())
+            .padding(.horizontal, 11)
+            .frame(height: 38)          // the bar's height, not a floating pill
+            .background(
+                UnevenRoundedRectangle(topLeadingRadius: 13, bottomLeadingRadius: 13,
+                                       bottomTrailingRadius: 0, topTrailingRadius: 0,
+                                       style: .continuous)
+                    .fill(elsewhere ? Theme.clay.opacity(0.14)
+                          : Color.white.opacity(hovering ? 0.06 : 0))
+            )
+            .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)

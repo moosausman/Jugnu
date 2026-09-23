@@ -58,9 +58,9 @@ private struct HeaderView: View {
     static func menuLabel(_ mode: SettingsStore.ModelMode) -> String {
         switch mode {
         case .api: return "API"
-        case .hybrid: return "Hybrid — local for easy work"
-        case .local: return "Local only"
-        case .claude: return "Claude — your Claude plan"
+        case .hybrid: return "Hybrid"
+        case .local: return "Local"
+        case .claude: return "Claude plan"
         }
     }
 
@@ -122,23 +122,18 @@ private struct HeaderView: View {
             }
 
             Menu {
-                Section("Windows") {
-                    Button("Jugnu's Desk") { WindowManager.shared.showDesk() }
-                        .keyboardShortcut("d", modifiers: [.command, .shift])
-                    Button("Trading Terminal") { WindowManager.shared.openTradingTerminal() }
-                        .keyboardShortcut("t", modifiers: [.command, .shift])
-                    Button("Activity") { showActivity.toggle() }
-                        .keyboardShortcut("j", modifiers: .command)
-                }
-                Section("This conversation") {
-                    Button("New conversation") { appState.clear() }
-                        .keyboardShortcut("n", modifiers: .command)
-                        .disabled(appState.thinking || appState.messages.isEmpty)
-                    Button("Daily Review") { appState.requestDailyReview() }
-                        .disabled(appState.thinking)
-                }
-                Section("Where Jugnu thinks") {
-                    Picker("Model", selection: Binding(
+                Button("Jugnu's Desk") { WindowManager.shared.showDesk() }
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
+                Button("Trading Terminal") { WindowManager.shared.openTradingTerminal() }
+                    .keyboardShortcut("t", modifiers: [.command, .shift])
+                Divider()
+                Button("New conversation") { appState.clear() }
+                    .keyboardShortcut("n", modifiers: .command)
+                    .disabled(appState.thinking || appState.messages.isEmpty)
+                // The model picker is a submenu: four modes flattened into
+                // this menu made it twice as long as it needed to be.
+                Menu("Model — \(Self.menuLabel(SettingsStore.ModelMode(rawValue: appState.modelMode) ?? .api))") {
+                    Picker("", selection: Binding(
                         get: { SettingsStore.ModelMode(rawValue: appState.modelMode) ?? .api },
                         set: { appState.setModelMode($0) })) {
                         ForEach(SettingsStore.ModelMode.allCases) { mode in
@@ -150,9 +145,9 @@ private struct HeaderView: View {
                 Divider()
                 Button("Settings…") { WindowManager.shared.showSettings() }
                     .keyboardShortcut(",", modifiers: .command)
-                // Jugnu's engine is a Python process started at launch: after
-                // an update it keeps running the code it loaded, which looks
-                // exactly like a fix that didn't work.
+                // Jugnu's engine is a Python process started with the app:
+                // after an update it keeps running the code it loaded, which
+                // looks exactly like a fix that didn't work.
                 Button("Restart engine") { appState.restartBackend() }
                     .disabled(appState.thinking)
                 Button("Hide Jugnu") { WindowManager.shared.hideChat() }

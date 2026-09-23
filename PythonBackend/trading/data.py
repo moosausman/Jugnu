@@ -24,9 +24,15 @@ from ._http import USER_AGENT as _USER_AGENT, HttpError, get_json
 
 _TIMEOUT = 25
 
-# Intervals we support, and how many of them make a year -- annualising
-# returns needs this, and it differs per market (crypto never closes).
-INTERVALS = {"1d": 1, "1h": 24, "1wk": 1}
+# How many minutes each bar covers. Day trading needs the short ones, and
+# annualising a return needs to know how many of them make a year -- which
+# differs per market, because crypto never closes (1440 minutes a day)
+# while a US session is 390.
+BAR_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "1d": 0, "1wk": 0}
+INTERVALS = BAR_MINUTES          # kept as the name the rest of the code knows
+
+# How far back each source will go for a given bar size. Yahoo refuses more.
+YAHOO_SPAN_DAYS = {"1m": 7, "5m": 59, "15m": 59, "30m": 59, "1h": 720}
 
 
 @dataclass(frozen=True)
@@ -105,7 +111,15 @@ def _cached(symbol: str, interval: str) -> list[Bar]:
 # Roughly how far apart bars of each interval should sit, in seconds. A
 # source that quietly coarsens the data (Yahoo does) is caught here instead
 # of silently turning a daily backtest into a quarterly one.
-_SPACING = {"1d": (20 * 3600, 5 * 86400), "1h": (1800, 4 * 86400), "1wk": (5 * 86400, 12 * 86400)}
+def _spacing(interval: str) -> tuple[float, float]:
+    """What gap between bars is plausible for this interval. Markets close,
+    so the median gap for a 5-minute bar is 5 minutes but the mean isn't."""
+    if interval == "1d":
+        return 20 * 3600, 5 * 86_400
+    if interval == "1wk":
+        return 5 * 86_400, 12 * 86_400
+    minutes = BAR_MINUTES.get(interval, 60)
+    return minutes * 50, minutes * 90
 
 
 def _check_spacing(symbol: str, interval: str, bars: list[Bar]) -> None:
@@ -113,7 +127,7 @@ def _check_spacing(symbol: str, interval: str, bars: list[Bar]) -> None:
         return
     gaps = sorted(bars[i + 1].ts - bars[i].ts for i in range(len(bars) - 1))
     median = gaps[len(gaps) // 2]
-    low, high = _SPACING[interval]
+    low, high = _spacing(interval)
     if not low <= median <= high:
         raise DataError(
             f"{symbol}: the source returned bars about {median / 86400:.0f} days apart for a "
@@ -151,7 +165,8 @@ def _yahoo(symbol: str, interval: str) -> list[Bar]:
     # through a backtest and produces nonsense. period1/period2 gives the
     # real daily history. Intraday is capped at ~2 years either way.
     now = int(time.time())
-    period1 = 0 if interval in ("1d", "1wk") else now - 720 * 86400
+    span = YAHOO_SPAN_DAYS.get(interval)
+    period1 = 0 if span is None else now - span * 86_400
     try:
         payload = get_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
                            params={"period1": period1, "period2": now + 86400,
@@ -177,12 +192,20 @@ def _yahoo(symbol: str, interval: str) -> list[Bar]:
     return bars
 
 
+# How much intraday history is worth pulling. Binance will happily serve
+# minute bars back to 2017, which is 4 million rows and, paged from the
+# start, never reaches today -- the reason a 5-minute chart of BTC ended in
+# 2019 the first time.
+_BINANCE_SPAN_DAYS = {"1m": 30, "5m": 180, "15m": 365, "30m": 730, "1h": 1460}
+
+
 def _binance(symbol: str, interval: str) -> list[Bar]:
     pair = symbol.replace("-", "").replace("/", "").upper()
     if pair.endswith("USD"):
         pair += "T"                      # BTC-USD -> BTCUSDT, the liquid pair
     bars: list[Bar] = []
-    start = 0
+    span = _BINANCE_SPAN_DAYS.get(interval)
+    start = 0 if span is None else int((time.time() - span * 86_400) * 1000)
     while True:
         try:
             rows = get_json("https://api.binance.com/api/v3/klines",
@@ -210,10 +233,19 @@ def _is_crypto(symbol: str) -> bool:
 
 
 def periods_per_year(symbol: str, interval: str) -> float:
-    """Trading periods in a year -- 252 days for markets that close, 365 for
-    crypto. Sharpe and CAGR are wrong by 20% if this is wrong."""
-    days = 365.0 if _is_crypto(symbol) else 252.0
-    return days * INTERVALS.get(interval, 1)
+    """Bars in a year. 252 days for markets that close, 365 for crypto --
+    and for intraday, how many bars fit in a session: 1440 minutes a day
+    for crypto, 390 for a US equity session. Sharpe and CAGR are badly
+    wrong if this is."""
+    crypto = _is_crypto(symbol)
+    days = 365.0 if crypto else 252.0
+    if interval == "1wk":
+        return days / 7
+    minutes = BAR_MINUTES.get(interval, 0)
+    if not minutes:                       # daily
+        return days
+    session = 1440.0 if crypto else 390.0
+    return days * max(1.0, session / minutes)
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +262,9 @@ def load(symbol: str, interval: str = "1d", start: str | None = None, end: str |
     if interval not in INTERVALS:
         raise DataError(f"interval must be one of {', '.join(INTERVALS)}")
     bars = _cached(symbol, interval)
-    stale = time.time() - _fetched_at(symbol, interval) > (6 * 3600 if interval == "1d" else 900)
+    age = time.time() - _fetched_at(symbol, interval)
+    minutes = BAR_MINUTES.get(interval, 0)
+    stale = age > (6 * 3600 if interval in ("1d", "1wk") else max(30.0, minutes * 30))
     if refresh or not bars or stale:
         picked = source or ("binance" if _is_crypto(symbol) and interval != "1wk" else "yahoo")
         try:
@@ -260,6 +294,58 @@ def window(bars: list[Bar], start: str | None, end: str | None) -> list[Bar]:
     low = epoch(start, False) if start else None
     high = epoch(end, True) if end else None
     return [b for b in bars if (low is None or b.ts >= low) and (high is None or b.ts < high)]
+
+
+def recent(symbol: str, interval: str = "1m", count: int = 300) -> list[Bar]:
+    """Just the last `count` bars, fetched directly.
+
+    A live chart can't call load(refresh=True): that re-pulls the whole
+    span -- thirty days of minute bars is forty round trips and a rewrite
+    of the cache, every tick. This asks the source for the tail only, and
+    merges it into whatever is already cached."""
+    symbol = symbol.strip().upper()
+    count = max(10, min(1000, count))
+    try:
+        if _is_crypto(symbol) and interval != "1wk":
+            pair = symbol.replace("-", "").upper()
+            if pair.endswith("USD"):
+                pair += "T"
+            rows = get_json("https://api.binance.com/api/v3/klines",
+                            params={"symbol": pair, "interval": interval, "limit": count},
+                            timeout=_TIMEOUT)
+            fresh = [Bar(int(r[0]) // 1000, float(r[1]), float(r[2]), float(r[3]),
+                         float(r[4]), float(r[5])) for r in rows]
+        else:
+            minutes = BAR_MINUTES.get(interval, 0) or 1440
+            days = max(1, int(count * minutes / 390) + 2)
+            now = int(time.time())
+            payload = get_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+                               params={"period1": now - days * 86_400, "period2": now + 86_400,
+                                       "interval": interval}, timeout=_TIMEOUT)
+            result = ((payload.get("chart") or {}).get("result") or [None])[0]
+            if not result:
+                return _cached(symbol, interval)[-count:]
+            stamps = result.get("timestamp") or []
+            quote = ((result.get("indicators") or {}).get("quote") or [{}])[0]
+            fresh = []
+            for i, ts in enumerate(stamps):
+                row = [quote.get(k, [None] * len(stamps))[i]
+                       for k in ("open", "high", "low", "close", "volume")]
+                if any(v is None for v in row[:4]):
+                    continue
+                fresh.append(Bar(int(ts), float(row[0]), float(row[1]), float(row[2]),
+                                 float(row[3]), float(row[4] or 0)))
+    except HttpError:
+        return _cached(symbol, interval)[-count:]
+    if not fresh:
+        return _cached(symbol, interval)[-count:]
+    conn = connect()
+    conn.executemany(
+        "INSERT OR REPLACE INTO bars (symbol, interval, ts, open, high, low, close, volume) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        [(symbol, interval, b.ts, b.open, b.high, b.low, b.close, b.volume) for b in fresh])
+    conn.commit()
+    return _cached(symbol, interval)[-count:]
 
 
 def latest(symbol: str, interval: str = "1d") -> Bar:
