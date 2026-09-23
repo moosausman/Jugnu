@@ -276,7 +276,9 @@ def build_parser() -> argparse.ArgumentParser:
     runs.set_defaults(fn=_runs)
 
     subparsers.add_parser("strategies", help="what's available").set_defaults(fn=_strategies)
-    subparsers.add_parser("term", help="the full-screen Jugnu terminal").set_defaults(fn=_term)
+    term = subparsers.add_parser("term", help="the full-screen Jugnu terminal")
+    term.add_argument("commands", nargs="*", help="commands to run on start, e.g. 'bt sma AAPL 2015'")
+    term.set_defaults(fn=_term)
     subparsers.add_parser("install-openbb",
                           help="add OpenBB (fundamentals, options) in its own environment"
                           ).set_defaults(fn=_install_openbb)
@@ -308,7 +310,7 @@ def _install_openbb(args):
 
 def _term(args):
     from .terminal import main as terminal_main
-    raise SystemExit(terminal_main())
+    raise SystemExit(terminal_main(getattr(args, "commands", None)))
 
 
 def main(argv: list[str] | None = None) -> int:

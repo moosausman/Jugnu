@@ -116,9 +116,11 @@ _DOMAINS = [
     ("files", re.compile(r"\b(?:files?|folders?|downloads|desktop|documents|pdf|finder|rename|unzip|zip)\b", re.I)),
     ("browser", re.compile(r"\b(?:safari|tabs?|website|webpage|url)\b", re.I)),
     ("memory", re.compile(r"^(?:remember|forget|note that|don'?t forget)\b|\bwhat do you (?:know|remember)\b", re.I)),
-    ("trading", re.compile(r"\bback ?test(?:ed|ing|s)?\b|\bpaper trad\w+|\btrading terminal\b|"
+    ("trading", re.compile(r"\bback ?test(?:ed|ing|s)?\b|\bpaper trad\w+|\btrading terminals?\b|"
                            r"\btrading strateg(?:y|ies)\b|\bsharpe\b|\bdrawdown\b|\bslippage\b|"
-                           r"\bbuy and hold\b|\bwalk[- ]forward\b|\bmax drawdown\b", re.I)),
+                           r"\bbuy and hold\b|\bwalk[- ]forward\b|\bmax drawdown\b|"
+                           r"\b(?:sims?|simulations?) (?:on|for|of|in)\b|"
+                           r"\brun \d+ (?:sims?|simulations?)\b", re.I)),
 ]
 
 # Questions about the user's own things -- their files, their accounts,
@@ -143,10 +145,18 @@ def direct_agent(text: str) -> str | None:
     matched = [name for name, pattern in _DOMAINS if pattern.search(t)]
     if len(matched) == 1:
         return matched[0]
+    # "open a trading terminal" reads as both system ("open X") and trading.
+    # It's one call to one tool, which the system agent owns -- planning it
+    # would cost a second model call to reach the same place.
+    if set(matched) == {"system", "trading"} and _TERMINAL.search(t):
+        return "system"
     if (not matched and _ANSWERABLE.search(t) and not _TIME_SENSITIVE.search(t)
             and not _ABOUT_THEIR_STUFF.search(t)):
         return "answer"
     return None
+
+
+_TERMINAL = re.compile(r"\b(?:trading )?terminals?\b", re.I)
 
 
 def attachment_agent(instruction: str) -> str | None:

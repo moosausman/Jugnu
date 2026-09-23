@@ -1759,12 +1759,18 @@ def _pick_model_mode() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """`argv` are commands to run once the screen is up -- which is how
+    Jugnu opens four terminals already running four different simulations."""
     if not sys.stdin.isatty():
         print("The Jugnu terminal needs a terminal. Run it directly:  python -m trading term")
         return 1
     _pick_model_mode()
     terminal = Terminal()
     terminal.refresh_quotes()
+    for command in argv or []:
+        for piece in str(command).split(";"):
+            if piece.strip():
+                terminal.run_command(piece.strip())
     try:
         terminal.loop()
     finally:

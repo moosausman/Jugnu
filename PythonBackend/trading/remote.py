@@ -115,33 +115,74 @@ def launcher_path() -> str:
     return str(SHARED / "jugnu")
 
 
-def open_terminals(count: int = 1) -> int:
-    """Opens the trading terminal in the Jugnu account, as real Terminal
-    windows on that desktop -- watch them on Jugnu's Desk (⌘⇧D)."""
+def grid(count: int, screen: tuple[int, int, int, int]) -> list[tuple[int, int, int, int]]:
+    """Window rectangles for `count` terminals, tiled over the screen.
+    Wider than tall, because a chart pane wants width."""
+    import math
+    x0, y0, x1, y1 = screen
+    columns = min(count, max(1, math.ceil(math.sqrt(count))))
+    rows = max(1, math.ceil(count / columns))
+    width = (x1 - x0) // columns
+    height = (y1 - y0) // rows
+    out = []
+    for i in range(count):
+        column, row = i % columns, i // columns
+        left = x0 + column * width
+        top = y0 + row * height
+        out.append((left, top, left + width, top + height))
+    return out
+
+
+def screen_bounds(port: int | None = None) -> tuple[int, int, int, int]:
+    try:
+        reply = post_json(f"http://127.0.0.1:{port or AGENT_PORT}/screen/displays", {"args": {}}, timeout=10)
+        display = (reply.get("displays") or [{}])[0].get("bounds") or {}
+        return (int(display.get("x", 0)), int(display.get("y", 0)) + 25,
+                int(display.get("x", 0)) + int(display.get("width", 1512)),
+                int(display.get("y", 0)) + int(display.get("height", 982)) - 80)
+    except Exception:
+        return (0, 25, 1512, 900)
+
+
+def open_terminals(count: int = 1, commands: list[str] | None = None, tile: bool = True) -> int:
+    """Opens the trading terminal in the Jugnu account -- several at once,
+    tiled, each running its own command. Watch them on Jugnu's Desk."""
     script = launcher_path()
+    count = max(1, min(8, count))
+    commands = commands or []
+    places = grid(count, screen_bounds()) if tile and count > 1 else []
     opened = 0
-    for _ in range(max(1, min(8, count))):
-        source = ('tell application "Terminal"\n'
-                  '  activate\n'
-                  f'  do script "clear && \'{script}\'"\n'
-                  '  delay 0.3\n'
-                  '  try\n'
-                  '    set number of columns of front window to 108\n'
-                  '    set number of rows of front window to 34\n'
-                  '  end try\n'
-                  'end tell')
-        command = "osascript -e " + json.dumps(source).replace("'", "'\\''")
+    for index in range(count):
+        command = commands[index] if index < len(commands) else ""
+        arguments = f" {_shell_quote(command)}" if command else ""
+        lines = ['tell application "Terminal"', "  activate",
+                 f'  do script "clear && \'{script}\' term{arguments}"', "  delay 0.35"]
+        if places:
+            left, top, right, bottom = places[index]
+            lines.append(f"  try\n    set bounds of front window to "
+                         f"{{{left}, {top}, {right}, {bottom}}}\n  end try")
+        else:
+            lines.append("  try\n    set number of columns of front window to 108\n"
+                         "    set number of rows of front window to 34\n  end try")
+        lines.append("end tell")
+        source = "\n".join(lines)
         try:
             reply = post_json(f"http://127.0.0.1:{AGENT_PORT}/shell/run",
-                              {"args": {"command": f"osascript -e {_quote(source)}", "timeout": 30}},
-                              timeout=45)
+                              {"args": {"command": f"osascript -e {_quote(source)}", "timeout": 40}},
+                              timeout=60)
         except HttpError as e:
             raise RemoteError(f"The Jugnu account isn't answering ({e}).") from e
         if reply.get("ok") is False:
             raise RemoteError(str(reply.get("error") or "couldn't open a window there"))
         opened += 1
-        time.sleep(0.4)          # Terminal drops windows asked for too fast
+        time.sleep(0.45)          # Terminal drops windows asked for too fast
     return opened
+
+
+def _shell_quote(text: str) -> str:
+    """A command going through AppleScript into a shell: quote it for the
+    shell, then leave AppleScript's own quoting to _quote()."""
+    return "'" + str(text).replace("'", "'\\''") + "'"
 
 
 def _quote(text: str) -> str:

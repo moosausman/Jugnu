@@ -435,6 +435,19 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(any(is_planner({"system": c["system"]}) for c in self.llm.calls))
 
 
+class TerminalRoutingTests(unittest.TestCase):
+    def test_opening_trading_terminals_goes_straight_to_the_agent_that_can(self):
+        # Both "open X" and "trading" match; planning it would cost a
+        # second model call to reach the one tool that does the job.
+        for text in ("open a trading terminal",
+                     "open 4 trading terminals side by side and run 4 sims on different stocks",
+                     "open 2 trading terminals on jugnu"):
+            self.assertEqual(router.direct_agent(text), "system", text)
+
+    def test_research_questions_still_go_to_trading(self):
+        self.assertEqual(router.direct_agent("backtest sma on AAPL"), "trading")
+
+
 if __name__ == "__main__":
     unittest.main()
 

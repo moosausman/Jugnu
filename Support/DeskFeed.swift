@@ -36,12 +36,21 @@ final class DeskFeed: ObservableObject {
     @Published var replayIndex: Int?
     /// While true, clicks and keys in the window are sent to that desktop.
     @Published var controlling = false
+    /// Set when the window is buried, minimised or the app is in the
+    /// background. Capturing a second macOS session costs that session CPU
+    /// and this one compositing, so it stops the moment nobody is looking.
+    @Published var paused = false {
+        didSet { if paused != oldValue { pausedChanged() } }
+    }
 
     /// ~2 minutes at 6fps. Frames are small (about 70KB), so this is a few
     /// tens of megabytes at worst and is dropped when the window closes.
     private static let historyLimit = 720
 
     private(set) var port = 8766
+    /// How wide a frame to ask for. Matching the window instead of always
+    /// asking for 1100px means a small Desk window costs a small capture.
+    var requestedWidth = 900
     private var task: Task<Void, Never>?
     private var seq = 0
     private var bounds = CGRect(x: 0, y: 0, width: 1512, height: 982)
@@ -79,9 +88,14 @@ final class DeskFeed: ObservableObject {
         var failures = 0
         while !Task.isCancelled {
             do {
+                if paused {
+                    try await Task.sleep(nanoseconds: 400_000_000)
+                    continue
+                }
                 if !state.isLive {
                     let info = try await Self.post("/screen/stream/start",
-                                                   ["maxWidth": 1100, "fps": 6, "quality": 0.55],
+                                                   ["maxWidth": requestedWidth, "fps": 5,
+                                                    "quality": 0.5],
                                                    port: port, timeout: 20)
                     apply(info)
                     state = .live
@@ -107,6 +121,15 @@ final class DeskFeed: ObservableObject {
                 try? await Task.sleep(nanoseconds: 800_000_000)
             }
         }
+    }
+
+    private func pausedChanged() {
+        guard paused else { return }
+        // Tell the other session to stop capturing rather than just
+        // ignoring its frames: the cost is over there, not here.
+        let port = self.port
+        state = .idle
+        Task.detached { _ = try? await DeskFeed.post("/screen/stream/stop", [:], port: port, timeout: 5) }
     }
 
     private func append(_ frame: Frame) {

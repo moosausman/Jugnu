@@ -202,5 +202,56 @@ class WatchlistTests(unittest.TestCase):
         self.assertTrue(quote.up)          # a zero change counts as flat, not a crash
 
 
+class OpeningManyTests(unittest.TestCase):
+    """Jugnu opening four terminals side by side, each running its own
+    simulation -- the tiling arithmetic and the startup commands."""
+
+    def test_windows_tile_without_overlapping_or_leaving_the_screen(self):
+        from trading import remote
+        screen = (0, 25, 1512, 900)
+        for count in range(1, 9):
+            places = remote.grid(count, screen)
+            self.assertEqual(len(places), count)
+            for left, top, right, bottom in places:
+                self.assertGreater(right, left)
+                self.assertGreater(bottom, top)
+                self.assertGreaterEqual(left, screen[0])
+                self.assertLessEqual(right, screen[2])
+                self.assertLessEqual(bottom, screen[3])
+            for i, a in enumerate(places):
+                for b in places[i + 1:]:
+                    apart = (min(a[2], b[2]) <= max(a[0], b[0])      # side by side
+                             or min(a[3], b[3]) <= max(a[1], b[1]))  # or stacked
+                    self.assertTrue(apart, f"{count} windows overlap: {a} {b}")
+
+    def test_four_windows_are_two_by_two(self):
+        from trading import remote
+        places = remote.grid(4, (0, 0, 1000, 800))
+        self.assertEqual(places[0], (0, 0, 500, 400))
+        self.assertEqual(places[3], (500, 400, 1000, 800))
+
+    def test_a_command_with_a_quote_cannot_break_out_of_the_shell(self):
+        """A symbol is model-written text going into a shell command line.
+        Quoted properly, the shell hands it over whole instead of running
+        the second half of it."""
+        import subprocess
+        from trading import remote
+        nasty = "bt sma AAPL'; echo pwned; echo '"
+        seen = subprocess.run(["sh", "-c", f"printf %s {remote._shell_quote(nasty)}"],
+                              capture_output=True, text=True, timeout=20)
+        self.assertEqual(seen.stdout, nasty)
+        self.assertNotIn("pwned", seen.stdout.replace("echo pwned", ""))
+
+    def test_startup_commands_run_before_the_prompt(self):
+        ran = []
+        terminal = term.Terminal.__new__(term.Terminal)
+        terminal.run_command = ran.append
+        for command in ["bt sma AAPL 2015; help", "signals"]:
+            for piece in command.split(";"):
+                if piece.strip():
+                    terminal.run_command(piece.strip())
+        self.assertEqual(ran, ["bt sma AAPL 2015", "help", "signals"])
+
+
 if __name__ == "__main__":
     unittest.main()

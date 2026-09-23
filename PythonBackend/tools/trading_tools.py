@@ -253,12 +253,31 @@ def paper_trade(action: str = "status", symbol: str = "", strategy: str = "sma",
         return _fail(str(e))
 
 
-def open_trading_terminal(count: int = 1, session: str = "") -> dict:
-    """Open the Jugnu trading terminal in Terminal windows.
+def open_trading_terminal(count: int = 1, session: str = "", commands: list = None) -> dict:
+    """Open the Jugnu trading terminal in Terminal windows -- several at
+    once, tiled, each already running whatever you tell it to.
 
-    The terminal is where backtests, portfolios, paper accounts and the
-    market screen live. Opening several lets you run separate experiments
-    side by side.
+    This is the main way to put work on screen. "Open 4 terminals and
+    backtest a different stock in each" is one call: count=4 with four
+    commands. Windows tile across the display automatically when count > 1.
+
+    Terminal commands you can pass (same language the terminal itself
+    speaks, `;` chains several in one window):
+        q NVDA                    quote and sparkline
+        ch AAPL 5m 120            price chart, 5-minute bars
+        watch BTC-USD 1m          a live chart that refreshes itself
+        bt sma AAPL 2015          backtest a strategy vs buy & hold
+        vs sma rsi MSFT           strategies side by side
+        risk sma TSLA             drawdowns, VaR, beta, trade stats
+        sweep rsi SPY             every parameter combination, as a heatmap
+        wf sma QQQ 5              walk forward: tune, then trade blind
+        mc sma AAPL               Monte Carlo on the trade sequence
+        pf sma:AAPL, rsi:SPY      a portfolio of sleeves, rebalanced
+        screen rsi<35 vol>2       scan the watchlist
+        signals                   what every strategy says right now
+        fun AAPL / news TSLA      OpenBB fundamentals, headlines
+        paper new growth 100000   a paper account; `run` steps it forward
+        alert NVDA < 200          tell me when
 
     Args:
         count: How many terminal windows to open (1-8).
@@ -266,6 +285,10 @@ def open_trading_terminal(count: int = 1, session: str = "") -> dict:
             them with Jugnu's Desk), "me" opens them here. Left empty, they
             open wherever this task is running -- which is what the account
             picker in Jugnu's window selects.
+        commands: One command line per window, in order, e.g.
+            ["bt sma AAPL 2015", "bt sma MSFT 2015", "bt rsi NVDA 2015",
+             "bt sma TSLA 2015"]. Fewer than `count` is fine; the rest open
+            empty. Omit it entirely to just open terminals.
     """
     import subprocess
     from pathlib import Path
@@ -275,33 +298,57 @@ def open_trading_terminal(count: int = 1, session: str = "") -> dict:
     from . import macbridge
 
     count = max(1, min(8, int(count or 1)))
+    if isinstance(commands, str):
+        commands = [commands]
+    commands = [str(c) for c in (commands or []) if str(c).strip()][:count]
     # Follow the task's account unless told otherwise. Everything else Jugnu
     # does goes through MacBridge, which routes by session automatically;
     # this tool opens a window itself, so it has to ask.
     where = (session or "").strip().lower() or macbridge.active_session()
     if where in ("jugnu", "agent", "other", "second"):
         try:
-            opened = remote.open_terminals(count)
+            opened = remote.open_terminals(count, commands)
         except remote.RemoteError as e:
             return _fail(str(e))
-        return {"ok": True, "opened": opened, "where": "the Jugnu account",
+        return {"ok": True, "opened": opened, "running": commands,
+                "where": "the Jugnu account",
                 "note": "Watch them on Jugnu's Desk (⌘⇧D)."}
 
     script = Path(__file__).resolve().parent.parent / "jugnu"
     if not script.exists():
         return _fail(f"The terminal launcher isn't where I expected ({script}).")
-    for _ in range(count):
-        source = ('tell application "Terminal"\n  activate\n'
-                  f'  do script "clear && \'{script}\'"\n'
-                  '  delay 0.3\n  try\n'
-                  '    set number of columns of front window to 108\n'
-                  '    set number of rows of front window to 34\n'
-                  '  end try\nend tell')
-        result = subprocess.run(["osascript", "-e", source], capture_output=True, text=True,
-                                timeout=45)
+    places = remote.grid(count, _screen()) if count > 1 else []
+    for index in range(count):
+        command = commands[index] if index < len(commands) else ""
+        arguments = " " + remote._shell_quote(command) if command else ""
+        lines = ['tell application "Terminal"', "  activate",
+                 f'  do script "clear && \'{script}\' term{arguments}"', "  delay 0.35"]
+        if places:
+            left, top, right, bottom = places[index]
+            lines.append(f"  try\n    set bounds of front window to "
+                         f"{{{left}, {top}, {right}, {bottom}}}\n  end try")
+        else:
+            lines.append("  try\n    set number of columns of front window to 108\n"
+                         "    set number of rows of front window to 34\n  end try")
+        lines.append("end tell")
+        result = subprocess.run(["osascript", "-e", "\n".join(lines)],
+                                capture_output=True, text=True, timeout=45)
         if result.returncode != 0:
             return _fail((result.stderr or "couldn't open Terminal").strip()[:200])
-    return {"ok": True, "opened": count, "where": "your account"}
+    return {"ok": True, "opened": count, "running": commands, "where": "your account"}
+
+
+def _screen() -> tuple:
+    """This display, in the coordinates AppleScript uses for window bounds."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["osascript", "-e", 'tell application "Finder" to get bounds of window of desktop'],
+            capture_output=True, text=True, timeout=10).stdout
+        x0, y0, x1, y1 = [int(float(n)) for n in out.split(",")]
+        return (x0, y0 + 25, x1, y1 - 60)
+    except Exception:
+        return (0, 25, 1512, 900)
 
 
 def past_backtests(limit: int = 10) -> dict:

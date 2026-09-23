@@ -30,6 +30,21 @@ struct DeskView: View {
         .background(Theme.windowBackground)
         .onAppear { feed.start(port: account == "agent" ? 8766 : 8765) }
         .onDisappear { feed.stop() }
+        // A live view of another macOS session is the most expensive thing
+        // Jugnu does. It runs while you're watching and stops when you
+        // aren't: another window in front, the app in the background, or
+        // the window minimised.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { note in
+            if let window = note.object as? NSWindow, window.title == "Jugnu's Desk" {
+                feed.paused = !window.occlusionState.contains(.visible)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            feed.paused = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            feed.paused = false
+        }
         .onChange(of: account) { _, new in
             feed.start(port: new == "agent" ? 8766 : 8765)
         }
@@ -85,6 +100,8 @@ struct DeskView: View {
             chip("Live", Theme.success)
         case .connecting:
             chip("Connecting…", Theme.inkFaint)
+        case .idle where feed.paused:
+            chip("Paused", Theme.inkFaint)
         case .idle:
             chip("Off", Theme.inkFaint)
         case .stopped:
@@ -128,6 +145,9 @@ struct DeskView: View {
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
+            .onChange(of: geometry.size.width) { _, width in
+                feed.requestedWidth = max(480, min(1400, Int(width * 1.5)))
+            }
             .overlay {
                 // Laid out as its own stack rather than two aligned
                 // overlays: an overlay sized the caption to one line and
