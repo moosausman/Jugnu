@@ -21,8 +21,6 @@ Protocol -- one JSON object per line, UTF-8:
         (attachment optional: text the user selected in another app)
     {"type": "set_model_mode", "mode": "api" | "hybrid" | "local" | "claude"}   -> {"type": "model_mode", ...}
     {"type": "check_claude"}                                      -> {"type": "claude_status", ...}
-    {"type": "trading", "action": "backtest"|"sweep"|"paper"|"runs"|"strategies", ...}
-                                                                  -> {"type": "trading", ...}
     {"type": "selection"}          -> {"type": "selection", "text": "...", "app": "..."}
         (session optional: the account the user picked for this request;
          absent = the default account / whatever the request itself says)
@@ -607,17 +605,6 @@ def _handle_management(kind: str, request: dict, conv_ref, worker) -> bool:
         threading.Thread(target=lambda: emit({"type": "model_mode", "mode": mode,
                                               "local": llm_client.local_status(),
                                               "claude": claude_code.status()}), daemon=True).start()
-        return True
-    if kind == "trading":
-        # The Trading window: backtests, sweeps and paper accounts. All
-        # simulation -- see trading/ -- so nothing here needs approval.
-        def _trading():
-            from trading import appapi
-            try:
-                emit({"type": "trading", **appapi.handle(request)})
-            except Exception as e:
-                emit({"type": "trading", "action": request.get("action", ""), "ok": False, "error": str(e)})
-        threading.Thread(target=_trading, name="trading", daemon=True).start()
         return True
     if kind == "check_claude":
         # One tiny real call: is Claude Code installed and logged in?

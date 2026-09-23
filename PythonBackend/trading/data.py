@@ -20,9 +20,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import requests
+from ._http import USER_AGENT as _USER_AGENT, HttpError, get_json
 
-_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Jugnu/1.0"
 _TIMEOUT = 25
 
 # Intervals we support, and how many of them make a year -- annualising
@@ -154,14 +153,11 @@ def _yahoo(symbol: str, interval: str) -> list[Bar]:
     now = int(time.time())
     period1 = 0 if interval in ("1d", "1wk") else now - 720 * 86400
     try:
-        response = requests.get(
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
-            params={"period1": period1, "period2": now + 86400,
-                    "interval": interval, "includePrePost": "false"},
-            headers={"User-Agent": _USER_AGENT}, timeout=_TIMEOUT)
-        response.raise_for_status()
-        payload = response.json()
-    except requests.RequestException as e:
+        payload = get_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+                           params={"period1": period1, "period2": now + 86400,
+                                   "interval": interval, "includePrePost": "false"},
+                           timeout=_TIMEOUT)
+    except HttpError as e:
         raise DataError(f"Couldn't reach Yahoo for {symbol}: {e}") from e
     chart = (payload.get("chart") or {})
     if chart.get("error"):
@@ -189,13 +185,11 @@ def _binance(symbol: str, interval: str) -> list[Bar]:
     start = 0
     while True:
         try:
-            response = requests.get("https://api.binance.com/api/v3/klines",
-                                    params={"symbol": pair, "interval": interval,
-                                            "limit": 1000, "startTime": start},
-                                    timeout=_TIMEOUT)
-            response.raise_for_status()
-            rows = response.json()
-        except requests.RequestException as e:
+            rows = get_json("https://api.binance.com/api/v3/klines",
+                            params={"symbol": pair, "interval": interval,
+                                    "limit": 1000, "startTime": start},
+                            timeout=_TIMEOUT)
+        except HttpError as e:
             raise DataError(f"Couldn't reach Binance for {pair}: {e}") from e
         if not rows:
             break

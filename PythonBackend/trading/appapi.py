@@ -1,16 +1,19 @@
 """
-appapi.py -- what the Trading window in the app asks for.
+appapi.py -- the machine-readable face of the engine: JSON in, JSON out.
 
-bridge.py forwards {"type": "trading", "action": ...} here and emits what
-comes back. Same engine as the CLI and the tools, so the window can't show
-a different number than the chat did.
+    python -m trading api '{"action": "backtest", "symbol": "AAPL"}'
 
-Series are thinned before they're sent: a ten-year daily backtest is 2,500
-points, and the window is 900 pixels wide.
+Used by `remote.py` to run simulations in the Jugnu account (where nothing
+but the standard library exists), and by anything else that wants results
+without parsing a screen. Same engine as the terminal, so two answers can
+never disagree.
+
+Series are thinned before they go out: a ten-year daily backtest is 2,500
+points and nothing that reads this needs them all.
 """
 from __future__ import annotations
 
-from . import analysis, metrics, paper, render, store, strategies
+from . import analysis, metrics, paper, portfolio, render, risk, store, strategies
 from .data import DataError, load
 
 MAX_POINTS = 700
@@ -53,6 +56,17 @@ def handle(request: dict) -> dict:
             return {"action": action, "ok": True, "runs": store.list_runs(int(request.get("limit") or 20))}
         if action == "paper":
             return _paper(request)
+        if action == "portfolio":
+            return _portfolio(request)
+        if action == "risk":
+            return _risk(request)
+        if action == "walk_forward":
+            return _walk_forward(request)
+        if action == "screen":
+            from . import screen
+            return {"action": action, "ok": True,
+                    "rows": screen.scan(request.get("symbols") or [],
+                                        filters=request.get("filters") or "")}
         return {"action": action, "ok": False, "error": f"Unknown trading action '{action}'."}
     except (DataError, KeyError, ValueError) as e:
         return {"action": action, "ok": False, "error": str(e)}
@@ -109,6 +123,39 @@ def _sweep(request: dict) -> dict:
                   "sharpe": round(row["sharpe"], 2), "trades": row["trades"]}
                  for row in result["rows"][:60]],
     }
+
+
+def _portfolio(request: dict) -> dict:
+    sleeves = portfolio.parse_sleeves(request.get("sleeves") or "")
+    result = portfolio.run(sleeves, start=request.get("start") or None,
+                           end=request.get("end") or None,
+                           cash=float(request.get("cash") or 10_000),
+                           slippage_bps=float(request.get("slippage_bps") or 5.0),
+                           rebalance=request.get("rebalance") or "monthly")
+    result["dates"] = _thin(result["dates"])
+    result["equity"] = [round(v, 2) for v in _thin(result["equity"])]
+    result["benchmark"] = [round(v, 2) for v in _thin(result["benchmark"])]
+    return {"action": "portfolio", "ok": True, **result}
+
+
+def _risk(request: dict) -> dict:
+    symbol = (request.get("symbol") or "AAPL").upper()
+    bars = load(symbol, request.get("interval") or "1d",
+                start=request.get("start") or None, end=request.get("end") or None)
+    result = analysis.backtest(bars, request.get("strategy") or "sma", _params(request.get("params")),
+                               symbol=symbol, slippage_bps=float(request.get("slippage_bps") or 5.0))
+    deep = risk.full(result, bars)
+    return {"action": "risk", "ok": True, "symbol": symbol, "strategy": result.strategy,
+            "metrics": result.metrics, "benchmark_metrics": result.benchmark_metrics,
+            "deep": deep, "verdicts": risk.verdicts(deep, result)}
+
+
+def _walk_forward(request: dict) -> dict:
+    symbol = (request.get("symbol") or "AAPL").upper()
+    bars = load(symbol, request.get("interval") or "1d", start=request.get("start") or None)
+    result = analysis.walk_forward(bars, request.get("strategy") or "sma", symbol=symbol,
+                                   folds=int(request.get("folds") or 4))
+    return {"action": "walk_forward", "ok": True, "symbol": symbol, **result}
 
 
 def _paper(request: dict) -> dict:

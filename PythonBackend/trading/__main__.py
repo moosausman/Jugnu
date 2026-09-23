@@ -1,6 +1,7 @@
 """
 The terminal face:  python -m trading <command>
 
+    term                      the full-screen terminal (start here)
     backtest sma --symbol AAPL --from 2015-01-01
     replay   rsi --symbol BTC-USD --speed 40
     sweep    sma --symbol AAPL
@@ -275,7 +276,39 @@ def build_parser() -> argparse.ArgumentParser:
     runs.set_defaults(fn=_runs)
 
     subparsers.add_parser("strategies", help="what's available").set_defaults(fn=_strategies)
+    subparsers.add_parser("term", help="the full-screen Jugnu terminal").set_defaults(fn=_term)
+    subparsers.add_parser("install-openbb",
+                          help="add OpenBB (fundamentals, options) in its own environment"
+                          ).set_defaults(fn=_install_openbb)
+    api = subparsers.add_parser("api", help="JSON in, JSON out (used by remote runs)")
+    api.add_argument("payload", nargs="?", default="", help="a JSON object; omit to read stdin")
+    api.set_defaults(fn=_api)
     return parser
+
+
+def _api(args):
+    """The machine face. Prints exactly one line of JSON."""
+    from . import appapi
+    raw = args.payload or sys.stdin.read()
+    try:
+        request = json.loads(raw or "{}")
+    except json.JSONDecodeError as e:
+        print(json.dumps({"ok": False, "error": f"bad JSON: {e}"}))
+        return
+    print(json.dumps(appapi.handle(request), default=str))
+
+
+def _install_openbb(args):
+    from . import sources
+    print("\n  Installing OpenBB into its own environment beside Jugnu's data.")
+    print("  A few hundred MB, one-off. Prices keep coming from Yahoo and Binance either way.\n")
+    ok, detail = sources.install(on_status=lambda text: print(f"  {text}", flush=True))
+    print(f"\n  {'installed ' + detail if ok else 'failed: ' + detail}\n")
+
+
+def _term(args):
+    from .terminal import main as terminal_main
+    raise SystemExit(terminal_main())
 
 
 def main(argv: list[str] | None = None) -> int:

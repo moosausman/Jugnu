@@ -21,7 +21,6 @@ final class WindowManager: NSObject, NSWindowDelegate {
     private var chatWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var deskWindow: NSWindow?
-    private var tradingWindow: NSWindow?
     private var orb: FireflyOrb?
     /// The chat panel is minimized into the firefly orb.
     private(set) var isCollapsed = false
@@ -305,28 +304,23 @@ final class WindowManager: NSObject, NSWindowDelegate {
 
     // MARK: - Settings
 
-    /// The Trading window: backtests and paper accounts. Simulation only.
-    func showTrading() {
-        let window = tradingWindow ?? makeTradingWindow()
-        present(window)
-    }
-
-    private func makeTradingWindow() -> NSWindow {
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: CGSize(width: 820, height: 700)),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
-            backing: .buffered, defer: false)
-        window.title = "Trading"
-        window.titlebarAppearsTransparent = true
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = NSColor(Theme.windowBackground)
-        window.isReleasedWhenClosed = false
-        window.contentMinSize = CGSize(width: 680, height: 480)
-        window.contentView = NSHostingView(rootView: TradingView(appState: AppState.shared))
-        window.center()
-        window.setFrameAutosaveName("JugnuTradingWindow")
-        tradingWindow = window
-        return window
+    /// The trading terminal, in Terminal.app. It's a terminal program, so
+    /// it belongs in a terminal -- a SwiftUI window over the same engine
+    /// was a slower way to reach the same numbers, and one more place for
+    /// them to disagree.
+    func openTradingTerminal() {
+        let script = Bundle.main.path(forResource: "jugnu", ofType: nil, inDirectory: "PythonBackend")
+            ?? NSString(string: "~/Desktop/Jugnu_test/PythonBackend/jugnu").expandingTildeInPath
+        let source = "tell application \"Terminal\"\n"
+            + "  activate\n"
+            + "  do script \"clear && '\(script)'\"\n"
+            + "end tell"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = ["-e", source]
+            try? process.run()
+        }
     }
 
     /// Jugnu's desk: a live view of the session Jugnu works in.

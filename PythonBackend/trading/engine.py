@@ -78,6 +78,10 @@ class Context:
     cash: float
     equity: float
     params: dict
+    # Average price paid for what's currently held, 0 when flat. Stops and
+    # targets are unwritable without it, which is most of what anyone wants
+    # a strategy to do.
+    entry_price: float = 0.0
 
     @property
     def bars(self) -> View:
@@ -152,7 +156,7 @@ def run(bars: list[Bar], strategy: Strategy, *, name: str = "strategy", symbol: 
         if i + 1 >= len(bars):
             break                      # nothing left to fill against; the last bar only marks
 
-        target = strategy(Context(bars, closes, i, position, book_cash, equity, params))
+        target = strategy(Context(bars, closes, i, position, book_cash, equity, params, avg_cost))
         try:
             target = float(target)
         except (TypeError, ValueError):

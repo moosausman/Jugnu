@@ -82,13 +82,15 @@ applies only to a session someone is sitting at (`kCGSSessionOnConsoleKey`).
 In a switched-out session the pointer rests there forever, which blocked
 every move the Jugnu account tried to make.
 
-## Trading (⌘⇧T) -- a paper simulator
+## Trading -- a paper simulator (⌘⇧T opens the terminal)
 `trading/` is a self-contained backtester: price history from Yahoo's chart
 endpoint and Binance's klines (no keys, no extra packages, cached in
 `trading.db`), an event-driven engine, five strategies, and the analysis that
-keeps a backtest honest. Three faces, one engine: `python -m trading` (CLI,
-including a bar-by-bar `replay`), Jugnu's tools (`tools/trading_tools.py`),
-and the Trading window.
+keeps a backtest honest. Three faces, one engine: the terminal below,
+Jugnu's tools (`tools/trading_tools.py`) so you can ask in chat, and
+`python -m trading` for scripting. There is no trading window: a SwiftUI
+view over the same engine was a slower way to reach the same numbers, so
+⌘⇧T opens the terminal in Terminal.app instead.
 
 Rules the engine keeps, because they're where homemade backtesters cheat:
 a strategy sees bars only up to the one it decides on (`engine.View` raises
@@ -107,6 +109,80 @@ daily check that reports back in chat. It is a simulator: no brokerage, no
 API keys, no orders. The tools are read-risk (`paper_trade` is low) under a
 `trading` capability, and Jugnu reports what a simulation did rather than
 advising what to buy.
+
+## The Jugnu terminal
+`PythonBackend/jugnu` (or `python -m trading term`) is the main way in:
+a full screen with live markets on top, work in the middle and a command
+line at the bottom. Raw ANSI, no curses and no dependencies, so it starts
+instantly and works over SSH. Quotes come from Yahoo and Binance in a
+thread pool, cached a few seconds; network and model work runs off the
+input loop so typing never blocks.
+
+Commands: `q` `ch` `wl` `mkt` `screen` `corr` `alert` (prices and scanning),
+`bt` `vs` `pf` `risk` `sweep` `wf` `costs` `replay` `paper` `runs` `trades`
+`y` `strats` `show` (research, all local arithmetic), `jobs` `job` `on`
+(what's running, and where), `fa` `opt` `source` (OpenBB), and four that
+spend a model call and say so: `build` `ask` `why` `explain`.
+
+**Several at once.** Every heavy command becomes a numbered job
+(`jobs.py`): the prompt returns immediately, four run in parallel, a strip
+under the market panel shows what's in flight, and `job N` re-prints one.
+Output is attributed per job through a thread-local, so concurrent runs
+don't interleave.
+
+**On the other account.** `on jugnu` sends the heavy commands to the second
+macOS login (`remote.py`). Two macOS facts shape it: your home folder is
+drwx------, so that account can't read the repo, and it has only the system
+Python. So the package is copied to /Users/Shared/jugnu-trading and speaks
+HTTP through `_http.py` (requests when present, urllib otherwise) --
+the whole package imports nothing outside the standard library. Commands
+travel over MacBridge's shell endpoint on :8766 and come back as JSON from
+`appapi.py` (`python -m trading api '{...}'`).
+
+**Quant depth.** `risk.py`: Calmar, Ulcer, VaR/CVaR from the real
+distribution, beta and alpha against the benchmark, rolling Sharpe, time
+under water, per-year returns, and trade statistics (payoff, profit factor,
+expectancy, hold times, whether one trade carried the result).
+`portfolio.py`: several sleeves (strategy × symbol × weight) aligned on a
+union calendar with forward fill, rebalanced on a schedule, against an
+equal-weight buy-and-hold of the same symbols, with the correlation matrix
+that shows whether "diversification" is one bet held twice. `screen.py`
+scans a universe for RSI extremes, volume spikes, 52-week position, trend
+and momentum, filterable (`screen rsi<35 vol>2`). `alerts.py` watches
+price or indicator conditions in the background and fires a macOS
+notification through MacBridge, once, then disarms.
+
+**OpenBB, optionally.** `sources.py` adds fundamentals, options and analyst
+data when OpenBB is installed. It lives in a sidecar virtualenv beside
+Jugnu's data, never in the app bundle: it's ~250MB and AGPLv3, so linking
+it into something distributable would make that AGPL too. Prices always
+come from Yahoo and Binance directly. `jugnu install-openbb` sets it up
+(and runs `openbb.build()`, without which a fresh install's first call dies
+on its own stale generated modules).
+
+Two things make it Jugnu's rather than another ticker:
+
+**Everything explains itself for free.** `explain.py` writes plain English
+from the run's own numbers with no model call -- what the strategy did,
+when it was in cash, what the costs took -- because a number you can't
+interpret is worse than no number. `explain <term>` defines the jargon.
+The model-backed layer (`ask`, `explain` with a result) reasons over the
+same figures and is told never to flatter a losing strategy.
+
+**`build <description>` writes a real strategy.** `authoring.py` asks the
+model for a function, then refuses to trust it: the source is parsed and
+walked (no imports, no attribute outside the context object, no dunders,
+no unbounded loops, only a whitelist of calls) and then executed with a
+stripped `__builtins__`. A rejection is fed back once so it can fix itself.
+What survives is saved in `trading/custom/` as an ordinary file you can
+read and edit, registered everywhere the registry is used, and immediately
+backtested with the usual warnings. `ctx.entry_price` exists so stops and
+targets are expressible.
+
+`why SYM` reads Yahoo's news endpoint (a general web search returns
+encyclopaedia pages when you want this morning), falls back to the open web
+when there's nothing fresh, and is told to say when the sources don't
+explain the move rather than inventing a reason.
 
 ## Shortcuts
 ⌥Space (global, configurable in Settings › General): opens Jugnu from any app

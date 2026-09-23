@@ -70,7 +70,7 @@ def step(account_id: str) -> dict:
         if fill_bar.ts <= last_ts:
             continue
         equity = cash + position * decision_bar.close
-        target = spec.run(Context(bars, closes, i, position, cash, equity, account["params"]))
+        target = spec.run(Context(bars, closes, i, position, cash, equity, account["params"], avg_cost))
         target = max(0.0, min(1.0, float(target or 0.0)))
         last_ts = fill_bar.ts
         held_weight = (position * decision_bar.close / equity) if equity > 0 else 0.0

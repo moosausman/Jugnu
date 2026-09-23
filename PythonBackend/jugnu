@@ -1,0 +1,4 @@
+#!/bin/bash
+# The Jugnu terminal. Run it from anywhere:  ~/Desktop/Jugnu_test/PythonBackend/jugnu
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
+exec PythonEnv/bin/python -m trading "${@:-term}"

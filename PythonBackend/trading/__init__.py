@@ -18,6 +18,14 @@ from .data import DataError, load, periods_per_year
 from .engine import Bar, Context, Result, Trade, run
 from .strategies import REGISTRY, describe, get, register
 
+# Strategies written from a description live in custom/ as ordinary files;
+# register them at import so the CLI, the tools and the app all see them.
+try:
+    from .authoring import load_saved as _load_saved
+    _load_saved()
+except Exception:      # a broken custom file must never stop the package importing
+    pass
+
 __all__ = [
     "backtest", "cost_sensitivity", "monte_carlo", "sweep", "walk_forward",
     "load", "periods_per_year", "DataError",

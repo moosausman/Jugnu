@@ -133,7 +133,7 @@ private struct HeaderView: View {
                 Divider()
                 Button("Jugnu's Desk") { WindowManager.shared.showDesk() }
                     .keyboardShortcut("d", modifiers: [.command, .shift])
-                Button("Trading") { WindowManager.shared.showTrading() }
+                Button("Trading Terminal") { WindowManager.shared.openTradingTerminal() }
                     .keyboardShortcut("t", modifiers: [.command, .shift])
                 Button("Settings…") { WindowManager.shared.showSettings() }
                 Button("Daily Review") { appState.requestDailyReview() }
