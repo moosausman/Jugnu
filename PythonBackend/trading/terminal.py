@@ -33,63 +33,23 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from . import (alerts, analysis, authoring, explain, jobs, metrics, paper, portfolio, quotes,
-               remote, render, risk, screen, sources, store, strategies)
+               remote, render, risk, screen, sources, store, strategies, ui)
 from .data import DataError, load
+from .ui import GUTTER, fit, money, percent, visible_width as visible
 
 # ---------------------------------------------------------------------------
 # Colours
 # ---------------------------------------------------------------------------
 
-RESET = "\x1b[0m"
-BOLD = "\x1b[1m"
-DIM = "\x1b[38;5;244m"
-FAINT = "\x1b[38;5;240m"
-INK = "\x1b[38;5;253m"
-CLAY = "\x1b[38;5;209m"
-GREEN = "\x1b[38;5;114m"
-RED = "\x1b[38;5;203m"
-AMBER = "\x1b[38;5;179m"
-BAR = "\x1b[48;5;236m"
-
-_ANSI = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def visible(text: str) -> int:
-    return len(_ANSI.sub("", text))
-
-
-def fit(text: str, width: int) -> str:
-    """Pad or truncate to an exact visible width, keeping colours intact."""
-    length = visible(text)
-    if length <= width:
-        return text + " " * (width - length)
-    out, count = "", 0
-    i = 0
-    while i < len(text) and count < width - 1:
-        if text[i] == "\x1b":
-            end = text.find("m", i)
-            if end == -1:
-                break
-            out += text[i:end + 1]
-            i = end + 1
-            continue
-        out += text[i]
-        count += 1
-        i += 1
-    return out + "…" + RESET
-
-
-def money(value: float, width: int = 0) -> str:
-    text = f"{value:,.2f}" if abs(value) < 1000 else f"{value:,.0f}"
-    return text.rjust(width) if width else text
+RESET, BOLD = ui.RESET, ui.BOLD
+DIM, FAINT, INK = ui.DIM, ui.FAINT, ui.INK
+CLAY, GREEN, RED, AMBER, BAR = ui.CLAY, ui.GREEN, ui.RED, ui.AMBER, ui.BAR
 
 
 def pct(value: float, width: int = 0, colour: bool = True) -> str:
-    text = f"{value:+.2f}%"
+    text = ui.percent(value, 2, colour=False)
     text = text.rjust(width) if width else text
-    if not colour:
-        return text
-    return (GREEN if value >= 0 else RED) + text + RESET
+    return ((GREEN if value >= 0 else RED) + text + RESET) if colour else text
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +68,10 @@ class Session:
     status: str = ""
     history: list[str] = field(default_factory=list)
     last_portfolio: dict | None = None
-    where: str = "local"          # where the next heavy command runs
+    # Where heavy commands run. Defaults to the Jugnu account when it's up:
+    # that's a whole second machine sitting idle, it keeps long sweeps off
+    # the session you're typing in, and you never have to switch user.
+    where: str = "local"
 
 
 class Terminal:
@@ -130,6 +93,8 @@ class Terminal:
         self.dirty = True
         self.last_refresh = 0.0
         self.markets = list(quotes.DEFAULT_MARKETS)
+        if remote.where_am_i() == "primary" and remote.available():
+            self.session.where = "jugnu"
 
     # -- output ------------------------------------------------------------
 
@@ -145,16 +110,19 @@ class Terminal:
             self.session.scroll = 0
             self.dirty = True
 
-    def para(self, text: str, indent: str = "  ", colour: str = DIM) -> None:
-        """Wrap prose to the window instead of letting fit() cut it off."""
-        import textwrap
-        for line in textwrap.wrap(text, max(40, _width() - len(indent) - 2)) or [""]:
-            self.write(f"{indent}{colour}{line}{RESET}")
+    def para(self, text: str, indent: str = ui.GUTTER, colour: str = DIM,
+             marker: str = "") -> None:
+        """Prose, wrapped to the window rather than cut off by it."""
+        self.write(*ui.note(text, _width(), marker=marker, colour=colour, indent=indent))
 
     def rule(self, label: str = "") -> None:
-        width = shutil.get_terminal_size((100, 30)).columns - 2
-        text = f"{DIM}{'─' * 2} {CLAY}{label}{RESET} " if label else f"{DIM}{'─' * 4}"
-        self.write(fit(text, width).rstrip() + f"{DIM}" + "─" * max(0, width - visible(text)) + RESET)
+        self.write("", ui.rule(label, _width()))
+
+    def stats(self, pairs: list[tuple[str, str]]) -> None:
+        self.write(*ui.stats(pairs, _width()))
+
+    def table(self, headers, rows, aligns: str = "", trim=None) -> None:
+        self.write(*ui.table(headers, rows, _width(), aligns=aligns, trim=trim))
 
     def status(self, message: str) -> None:
         self.session.status = message
@@ -194,24 +162,64 @@ class Terminal:
         import llm_client
         clock = time.strftime("%a %d %b  %H:%M:%S")
         mode = llm_client.model_mode()
-        left = f"{BAR}{BOLD}{CLAY} JUGNU TERMINAL {RESET}{BAR}{DIM} paper · simulation only{RESET}"
-        right = f"{BAR}{DIM}{mode}  {clock} {RESET}"
+        narrow = width < 100
+        place = "@jugnu" if self.session.where == "jugnu" else "@here"
+        left = f"{BAR}{BOLD}{CLAY} JUGNU {RESET}{BAR}{FAINT} {place}{RESET}" if narrow else (
+            f"{BAR}{BOLD}{CLAY} JUGNU TERMINAL {RESET}{BAR}{FAINT} paper · simulation only · "
+            + ("runs in the Jugnu account" if self.session.where == "jugnu" else "runs here")
+            + RESET)
+        clock_text = time.strftime("%H:%M") if narrow else clock
+        right = f"{BAR}{FAINT}{mode}  {clock_text} {RESET}"
         gap = max(1, width - visible(left) - visible(right))
         return left + BAR + " " * gap + right
 
     def _markets(self, width: int) -> list[str]:
+        """Two columns in a wide window, one compact ticker in a narrow or
+        short one -- an 80x24 terminal can't spare six rows for prices."""
         watch = quotes.watchlist()
-        market_quotes = [quotes.cached(s) or quotes.Quote(symbol=s) for s in self.markets]
-        watch_quotes = [quotes.cached(s) or quotes.Quote(symbol=s) for s in watch]
+        market = [quotes.cached(s) or quotes.Quote(symbol=s) for s in self.markets]
+        listed = [quotes.cached(s) or quotes.Quote(symbol=s) for s in watch]
+        height = shutil.get_terminal_size((100, 30)).lines
+
+        if width < 96 or height < 28:
+            cells = [self._ticker_cell(q) for q in market + listed if q.price or q.error]
+            rows, line = [], ui.GUTTER
+            for cell in cells:
+                if ui.width_of(line) + ui.width_of(cell) + 3 > width:
+                    rows.append(line)
+                    line = ui.GUTTER
+                line += cell + f"{FAINT}  ·  {RESET}"
+            rows.append(line)
+            return rows[:2]
+
         half = width // 2 - 1
-        left = [f"{DIM}MARKETS{RESET}"] + [self._quote_line(q, half) for q in market_quotes]
-        right = [f"{DIM}WATCHLIST{RESET}"] + [self._quote_line(q, half, volume=True) for q in watch_quotes]
+        left = [f"{FAINT}MARKETS{RESET}"] + [self._quote_line(q, half) for q in market]
+        right = [f"{FAINT}WATCHLIST{RESET}"] + [self._quote_line(q, half - 2, volume=True)
+                                                for q in listed]
         rows = []
         for i in range(max(len(left), len(right))):
             a = left[i] if i < len(left) else ""
             b = right[i] if i < len(right) else ""
-            rows.append(fit(a, half) + f"{FAINT}│{RESET}" + fit(b, width - half - 1))
+            rows.append(fit(a, half) + f"{FAINT}│{RESET} " + fit(b, width - half - 2))
         return rows
+
+    def _ticker_cell(self, quote: quotes.Quote) -> str:
+        if quote.error or not quote.price:
+            return f"{INK}{quote.symbol}{RESET} {FAINT}—{RESET}"
+        return (f"{INK}{quote.symbol}{RESET} {ui.money(quote.price)} "
+                + ui.percent(quote.change_pct))
+
+    def _quote_line(self, quote: quotes.Quote, width: int, volume: bool = False) -> str:
+        if quote.error:
+            return f"{INK}{quote.symbol:<9}{RESET}{FAINT}unavailable{RESET}"
+        if not quote.price:
+            return f"{INK}{quote.symbol:<9}{RESET}{FAINT}…{RESET}"
+        line = (f"{INK}{quote.symbol:<9}{RESET}"
+                + ui.pad(ui.money(quote.price), 10, ">") + "  "
+                + ui.pad(ui.percent(quote.change_pct), 8, ">"))
+        if volume and quote.volume_ratio >= 1.8:
+            line += f"  {AMBER}{quote.volume_ratio:.1f}× vol{RESET}"
+        return fit(line, width)
 
     def _jobs_strip(self, width: int) -> str:
         """One line showing what's running, so several simulations at once
@@ -228,18 +236,6 @@ class Terminal:
             cells.append(f"{mark} {FAINT}[{entry.id}]{RESET} {DIM}{entry.label[:30]}{RESET}"
                          f" {FAINT}{entry.seconds:.0f}s{RESET}{place}")
         return " " + "  ".join(cells)
-
-    def _quote_line(self, quote: quotes.Quote, width: int, volume: bool = False) -> str:
-        if quote.error:
-            return f"{quote.symbol:<9}{DIM}unavailable{RESET}"
-        if not quote.price:
-            return f"{quote.symbol:<9}{FAINT}…{RESET}"
-        arrow = f"{GREEN}▲{RESET}" if quote.up else f"{RED}▼{RESET}"
-        line = f"{INK}{quote.symbol:<9}{RESET}{money(quote.price):>10}  {pct(quote.change_pct, 7)} {arrow}"
-        if volume and quote.volume_ratio:
-            flag = f" {AMBER}⚠{RESET}" if quote.volume_ratio >= 2 else ""
-            line += f"  {DIM}vol {quote.volume_ratio:.1f}×{RESET}{flag}"
-        return fit(line, width)
 
     def _status(self, width: int) -> str:
         if self.session.busy:
@@ -314,10 +310,12 @@ class Terminal:
                 self.dirty = True
         self.jobs.submit(task)
 
-    def job(self, label: str, fn, *, where: str | None = None) -> None:
+    def job(self, label: str, fn, *, where: str = "local") -> None:
         """Heavy work becomes a numbered job: the prompt comes straight back,
-        several can run at once, and `job N` re-prints what it produced."""
-        where = where or self.session.where
+        several can run at once, and `job N` re-prints what it produced.
+
+        `where` is where the work actually ran, not where the session is
+        pointed -- a job labelled @jugnu has to have been there."""
         def work(entry):
             self.current.job = entry
             try:
@@ -389,7 +387,12 @@ class Terminal:
             f"  {INK}help{RESET}                 {DIM}everything else{RESET}",
             "")
         if loaded:
-            self.write(f"{DIM}loaded your strategies: {', '.join(loaded)}{RESET}", "")
+            self.write(f"{ui.GUTTER}{FAINT}your strategies: {', '.join(loaded)}{RESET}")
+        if self.session.where == "jugnu":
+            self.para("Heavy commands run in the Jugnu account, so sweeps don't slow this "
+                      "session down and you never switch user. `on me` keeps them here.",
+                      colour=FAINT)
+        self.write("")
 
     # -- commands ----------------------------------------------------------
 
@@ -466,19 +469,20 @@ class Terminal:
     def _quote(self, symbol: str) -> None:
         quote = quotes.one(symbol, max_age=2)
         if quote.error:
-            self.write(f"{RED}{symbol}: {quote.error}{RESET}")
+            self.para(f"{symbol}: {quote.error}", colour=RED)
             return
         self.rule(symbol)
-        arrow = f"{GREEN}▲{RESET}" if quote.up else f"{RED}▼{RESET}"
-        self.write(f"  {BOLD}{INK}{money(quote.price)}{RESET} {arrow}  {pct(quote.change_pct)}"
-                   f"  {DIM}({quote.change:+,.2f}){RESET}")
-        if quote.open:
-            self.write(f"  {DIM}open{RESET} {money(quote.open)}   {DIM}high{RESET} {money(quote.high)}"
-                       f"   {DIM}low{RESET} {money(quote.low)}   {DIM}volume{RESET} {quote.volume:,.0f}"
-                       + (f"  {AMBER}{quote.volume_ratio:.1f}× normal{RESET}"
-                          if quote.volume_ratio >= 1.8 else ""))
+        self.write(f"{ui.GUTTER}{BOLD}{INK}{ui.money(quote.price)}{RESET}  "
+                   f"{ui.percent(quote.change_pct)}  {FAINT}({quote.change:+,.2f}){RESET}", "")
+        pairs = [("open", ui.money(quote.open)), ("high", ui.money(quote.high)),
+                 ("low", ui.money(quote.low)), ("volume", ui.money(quote.volume))]
+        if quote.volume_ratio:
+            pairs.append(("vs normal", (AMBER if quote.volume_ratio >= 1.8 else INK)
+                          + f"{quote.volume_ratio:.1f}×" + RESET))
+        self.stats([(label, value) for label, value in pairs if value not in ("0.00", "$0.00")])
         if quote.spark:
-            self.write(f"  {CLAY}{render.sparkline(quote.spark, 64)}{RESET}  {DIM}recent{RESET}")
+            self.write(f"{ui.GUTTER}{CLAY}{ui.sparkline(quote.spark, _width() - 12)}{RESET}"
+                       f"  {FAINT}recent{RESET}")
 
     def cmd_chart(self, args: list[str]) -> None:
         symbol = (args[0] if args else self.session.symbol).upper()
@@ -582,34 +586,49 @@ class Terminal:
 
     def _show_result(self, result, notes: list[str], costs: dict | None = None) -> None:
         mine, theirs = result.metrics, result.benchmark_metrics
-        self.rule(f"{result.symbol} · {result.strategy}"
-                  f"({' '.join(f'{k}={v}' for k, v in result.params.items())})")
-        won = mine["total_return"] > theirs["total_return"]
-        self.write(
-            f"  {DIM}{result.dates[0]} → {result.dates[-1]}   "
-            f"{result.slippage_bps:g}bps slippage, ${result.commission:g}/trade{RESET}",
-            f"  {BOLD}strategy{RESET} {(GREEN if won else INK)}{mine['total_return'] * 100:+.1f}%{RESET}"
-            f"    {DIM}buy & hold{RESET} {(INK if won else GREEN)}{theirs['total_return'] * 100:+.1f}%{RESET}"
-            f"    {DIM}ends at{RESET} ${mine['final']:,.0f}")
-        self.write(f"  {DIM}sharpe{RESET} {mine['sharpe']:.2f} {FAINT}vs {theirs['sharpe']:.2f}{RESET}"
-                   f"   {DIM}max drawdown{RESET} {RED}{mine['max_drawdown'] * 100:.1f}%{RESET}"
-                   f"   {DIM}trades{RESET} {mine['trades']}"
-                   + (f"   {DIM}win rate{RESET} {mine['win_rate'] * 100:.0f}%" if mine["win_rate"] else "")
-                   + f"   {DIM}invested{RESET} {mine['exposure'] * 100:.0f}%")
+        params = " ".join(f"{k}={v}" for k, v in result.params.items())
+        self.rule(f"{result.symbol}  {result.strategy}" + (f"  {params}" if params else ""))
+        self.write(f"{ui.GUTTER}{FAINT}{result.dates[0]} → {result.dates[-1]}"
+                   f"   {result.slippage_bps:g}bps slippage, ${result.commission:g}/trade,"
+                   f" ${result.cash:,.0f} start{RESET}", "")
+
+        beat = mine["total_return"] > theirs["total_return"]
+        self.stats([
+            ("strategy", (GREEN if beat else INK) + ui.percent(mine["total_return"] * 100) + RESET
+             if not beat else ui.percent(mine["total_return"] * 100)),
+            ("buy & hold", ui.percent(theirs["total_return"] * 100)),
+            ("ends at", f"{INK}{ui.money(mine['final'], '$')}{RESET}"),
+            ("sharpe", f"{INK}{mine['sharpe']:.2f}{RESET} {FAINT}vs {theirs['sharpe']:.2f}{RESET}"),
+            ("max fall", f"{RED}{mine['max_drawdown'] * 100:.0f}%{RESET}"),
+            ("trades", f"{INK}{mine['trades']}{RESET}"),
+            ("won", f"{INK}{mine['win_rate'] * 100:.0f}%{RESET}" if mine["win_rate"] else "—"),
+            ("invested", f"{INK}{mine['exposure'] * 100:.0f}%{RESET}"),
+        ])
         for note in notes:
-            self.write(f"  {AMBER}⚠ {note}{RESET}")
+            self.para(note, colour=AMBER, marker="⚠")
+
         self.write("")
-        self.write(_equity_chart(result, width=_width() - 12))
+        self.write(*ui.chart([(result.benchmark, "·", FAINT), (result.equity, "█", CLAY)],
+                             _width(), self._chart_height(),
+                             result.dates[0], result.dates[-1]))
+        self.write(ui.legend([("█", CLAY, "strategy"), ("·", FAINT, "buy & hold")]))
+
         if costs:
-            cells = "   ".join(f"{DIM}{level:g}bps{RESET} "
-                               + (GREEN if value > 0 else RED) + f"{value * 100:+.0f}%" + RESET
-                               for level, value in sorted(costs.items()))
-            self.write("", f"  {DIM}at other slippage:{RESET} {cells}")
+            self.write("")
+            self.stats([(f"{level:g}bps", ui.percent(value * 100, 0))
+                        for level, value in sorted(costs.items())])
         self.write("")
         for line in explain.plain(result):
             self.para(line)
-        self.write("", f"  {FAINT}`explain` for more, `ask <question>` to interrogate it, "
-                       f"`trades` for the list{RESET}")
+        self.write("")
+        self.para("`explain` unpacks it · `ask <question>` interrogates it · `risk` goes deeper "
+                  "· `trades` lists them", colour=FAINT)
+
+    def _chart_height(self) -> int:
+        """Charts shrink in a short window instead of pushing everything
+        else off the screen."""
+        lines = shutil.get_terminal_size((100, 30)).lines
+        return max(5, min(12, (lines - 14) // 2))
 
     def cmd_sweep(self, args: list[str]) -> None:
         strategy, symbol, start, _ = self._parse_run(args)
@@ -947,35 +966,40 @@ class Terminal:
             self.write(f"{DIM}pf sma:AAPL, breakout:BTC-USD, rsi:SPY   (a *2 after one weights it){RESET}")
             return
 
+        if self.session.where == "jugnu":
+            self._remote({"action": "portfolio", "sleeves": spec, "start": start},
+                         f"portfolio {len(sleeves)} sleeves", self._show_portfolio)
+            return
+
         def work(entry):
-            result = portfolio.run(sleeves, start=start or None)
-            self.session.last_portfolio = result
-            mine, theirs = result["metrics"], result["benchmark_metrics"]
-            self.rule(f"portfolio · {len(sleeves)} sleeves · rebalanced {result['rebalance']}")
-            won = mine["total_return"] > theirs["total_return"]
-            self.write(f"  {BOLD}together{RESET} {(GREEN if won else INK)}"
-                       f"{mine['total_return'] * 100:+.1f}%{RESET}"
-                       f"    {DIM}equal-weight hold{RESET} {(INK if won else GREEN)}"
-                       f"{theirs['total_return'] * 100:+.1f}%{RESET}"
-                       f"    {DIM}sharpe{RESET} {mine['sharpe']:.2f}"
-                       f"   {DIM}max drawdown{RESET} {RED}{mine['max_drawdown'] * 100:.1f}%{RESET}")
-            self.write("")
-            for sleeve in result["sleeves"]:
-                self.write(f"  {INK}{sleeve['label']:<22}{RESET}{DIM}weight{RESET} "
-                           f"{sleeve['weight'] * 100:>3.0f}%   "
-                           + (GREEN if sleeve["return"] > 0 else RED)
-                           + f"{sleeve['return'] * 100:>+9.1f}%" + RESET
-                           + f"   {DIM}sharpe{RESET} {sleeve['sharpe']:>5.2f}"
-                           f"   {DIM}maxdd{RESET} {sleeve['max_drawdown'] * 100:>6.1f}%"
-                           f"   {DIM}trades{RESET} {sleeve['trades']}")
-            self.write("")
-            self.write(_plot([(result["benchmark"], "·", FAINT), (result["equity"], "█", CLAY)],
-                             9, _width() - 12, result["dates"][0], result["dates"][-1]))
-            self.write(f"{' ' * 11}{CLAY}█ portfolio{RESET}   {FAINT}· equal-weight hold{RESET}", "")
-            self._correlation_table(result["correlation"])
-            for note in result["notes"]:
-                self.para(note)
+            self._show_portfolio(portfolio.run(sleeves, start=start or None))
         self.job(f"portfolio {len(sleeves)} sleeves", work)
+
+    def _show_portfolio(self, result: dict) -> None:
+        self.session.last_portfolio = result
+        mine, theirs = result["metrics"], result["benchmark_metrics"]
+        self.rule(f"portfolio  {len(result['sleeves'])} sleeves  "
+                  f"rebalanced {result['rebalance']}")
+        self.stats([
+            ("together", ui.percent(mine["total_return"] * 100)),
+            ("equal-weight hold", ui.percent(theirs["total_return"] * 100)),
+            ("sharpe", f"{INK}{mine['sharpe']:.2f}{RESET}"),
+            ("max fall", f"{RED}{mine['max_drawdown'] * 100:.0f}%{RESET}"),
+        ])
+        self.table(["sleeve", "weight", "return", "sharpe", "max fall", "trades"],
+                   [[f"{INK}{s['label']}{RESET}", f"{s['weight'] * 100:.0f}%",
+                     ui.percent(s["return"] * 100, 0), f"{s['sharpe']:.2f}",
+                     f"{RED}{s['max_drawdown'] * 100:.0f}%{RESET}", str(s["trades"])]
+                    for s in result["sleeves"]],
+                   aligns="<>>>>>", trim=[5, 4])
+        self.write("")
+        self.write(*ui.chart([(result["benchmark"], "·", FAINT), (result["equity"], "█", CLAY)],
+                             _width(), self._chart_height(),
+                             result["dates"][0], result["dates"][-1]))
+        self.write(ui.legend([("█", CLAY, "portfolio"), ("·", FAINT, "equal-weight hold")]), "")
+        self._correlation_table(result["correlation"])
+        for note in result["notes"]:
+            self.para(note)
 
     def _correlation_table(self, matrix: dict) -> None:
         labels = list(matrix)
@@ -994,52 +1018,65 @@ class Terminal:
 
     def cmd_risk(self, args: list[str]) -> None:
         strategy, symbol, start, params = self._parse_run(args)
+        if self.session.where == "jugnu":
+            self._remote({"action": "risk", "symbol": symbol, "strategy": strategy,
+                          "start": start, "params": params},
+                         f"risk {strategy} {symbol}",
+                         lambda reply: self._show_risk(reply["symbol"], reply["strategy"],
+                                                       reply["deep"], reply["verdicts"]))
+            return
+
         def work(entry):
             bars = load(symbol, start=start or None)
             result = analysis.backtest(bars, strategy, params, symbol=symbol)
-            deep = risk.full(result, bars)
             self.session.last_result = result
-            trades = deep["trades"]
-            self.rule(f"{symbol} · {strategy} · risk")
-            self.write(
-                f"  {DIM}calmar{RESET} {deep['calmar']:>6.2f}   {DIM}ulcer{RESET} {deep['ulcer']:>6.1f}"
-                f"   {DIM}beta{RESET} {deep['beta']:>6.2f}   {DIM}alpha{RESET} "
-                f"{deep['alpha'] * 100:>+6.1f}%/yr",
-                f"  {DIM}worst day (95%){RESET} {RED}{deep['var95'] * 100:>6.2f}%{RESET}"
-                f"   {DIM}average of the worst{RESET} {RED}{deep['cvar95'] * 100:>6.2f}%{RESET}",
-                f"  {DIM}under water{RESET} {deep['underwater']['share_under_water'] * 100:>4.0f}% of the time"
-                f"   {DIM}longest{RESET} {deep['underwater']['longest_days']} days"
-                + (f"   {AMBER}still under water{RESET}" if deep["underwater"]["still_under_water"] else ""))
-            if trades.get("round_trips"):
-                self.write("",
-                    f"  {DIM}round trips{RESET} {trades['round_trips']}"
-                    f"   {DIM}win rate{RESET} {trades['win_rate'] * 100:.0f}%"
-                    f"   {DIM}payoff{RESET} {trades['payoff']:.2f}"
-                    f"   {DIM}profit factor{RESET} {trades['profit_factor']:.2f}",
-                    f"  {DIM}average win{RESET} {GREEN}${trades['average_win']:,.0f}{RESET}"
-                    f"   {DIM}average loss{RESET} {RED}${trades['average_loss']:,.0f}{RESET}"
-                    f"   {DIM}expectancy{RESET} ${trades['expectancy']:,.0f}/trade",
-                    f"  {DIM}median hold{RESET} {trades['median_hold_days']:.0f} days"
-                    f"   {DIM}worst losing streak{RESET} {trades['worst_losing_streak']}")
-            self.write("")
-            self._yearly_table(deep["yearly"])
-            for note in risk.verdicts(deep, result):
-                self.para(f"⚠ {note}", colour=AMBER)
+            self._show_risk(symbol, strategy, risk.full(result, bars),
+                            risk.verdicts(risk.full(result, bars), result))
         self.job(f"risk {strategy} {symbol}", work)
+
+    def _show_risk(self, symbol: str, strategy: str, deep: dict, verdicts: list[str]) -> None:
+        trades = deep.get("trades", {})
+        water = deep["underwater"]
+        self.rule(f"{symbol}  {strategy}  risk")
+        self.stats([
+            ("calmar", f"{INK}{deep['calmar']:.2f}{RESET}"),
+            ("ulcer", f"{INK}{deep['ulcer']:.1f}{RESET}"),
+            ("beta", f"{INK}{deep['beta']:.2f}{RESET}"),
+            ("alpha/yr", ui.percent(deep["alpha"] * 100)),
+            ("worst day", f"{RED}{deep['var95'] * 100:.1f}%{RESET}"),
+            ("worst tail", f"{RED}{deep['cvar95'] * 100:.1f}%{RESET}"),
+            ("under water", f"{INK}{water['share_under_water'] * 100:.0f}%{RESET}"),
+            ("longest", f"{INK}{water['longest_days']}d{RESET}"),
+        ])
+        if water["still_under_water"]:
+            self.para(f"Still under water: {water['current_drawdown'] * 100:.0f}% below its best.",
+                      colour=AMBER, marker="⚠")
+        if trades.get("round_trips"):
+            self.stats([
+                ("round trips", f"{INK}{trades['round_trips']}{RESET}"),
+                ("won", f"{INK}{trades['win_rate'] * 100:.0f}%{RESET}"),
+                ("payoff", f"{INK}{trades['payoff']:.2f}{RESET}"),
+                ("profit factor", f"{INK}{trades['profit_factor']:.2f}{RESET}"),
+                ("avg win", f"{GREEN}{ui.money(trades['average_win'], '$')}{RESET}"),
+                ("avg loss", f"{RED}{ui.money(trades['average_loss'], '$')}{RESET}"),
+                ("per trade", f"{INK}{ui.money(trades['expectancy'], '$')}{RESET}"),
+                ("median hold", f"{INK}{trades['median_hold_days']:.0f}d{RESET}"),
+            ])
+        self._yearly_table(deep.get("yearly", []))
+        for note in verdicts:
+            self.para(note, colour=AMBER, marker="⚠")
 
     def _yearly_table(self, rows: list[dict]) -> None:
         if not rows:
             return
-        self.write(f"  {DIM}year by year{RESET}")
+        self.write("", f"{ui.GUTTER}{FAINT}year by year{RESET}")
+        scale = max((abs(row["strategy"]) for row in rows), default=1) or 1
+        bar_width = max(8, min(30, _width() - 40))
         for row in rows:
-            width = 34
-            value = row["strategy"]
-            bar_len = min(width, int(abs(value) * width / 1.0)) if abs(value) < 1 else width
-            colour = GREEN if value >= 0 else RED
-            self.write(f"  {DIM}{row['year']}{RESET} {colour}{value * 100:>+7.1f}%{RESET} "
-                       f"{colour}{'█' * bar_len}{RESET}"
-                       + " " * max(0, width - bar_len)
-                       + f" {FAINT}hold {row['benchmark'] * 100:+.1f}%{RESET}")
+            self.write(f"{ui.GUTTER}{FAINT}{row['year']}{RESET} "
+                       + ui.pad(ui.percent(row["strategy"] * 100, 0), 8, ">") + " "
+                       + ui.bar(row["strategy"], scale, bar_width)
+                       + f" {FAINT}hold {row['benchmark'] * 100:+.0f}%{RESET}")
 
     def cmd_compare(self, args: list[str]) -> None:
         """vs sma rsi breakout AAPL 2015"""
@@ -1052,56 +1089,72 @@ class Terminal:
             return
         def work(entry):
             bars = load(symbol, start=start or None)
-            self.rule(f"{symbol} · {len(names)} strategies")
-            self.write(f"  {DIM}{'strategy':<14}{'return':>10}{'sharpe':>9}{'maxdd':>9}"
-                       f"{'trades':>8}{'invested':>10}{RESET}")
-            rows = []
-            for name in names:
-                result = analysis.backtest(bars, name, symbol=symbol)
-                rows.append((name, result))
+            self.rule(f"{symbol}  {len(names)} strategies")
+            rows = [(name, analysis.backtest(bars, name, symbol=symbol)) for name in names]
             hold = rows[0][1].benchmark_metrics
+            table = []
             for name, result in sorted(rows, key=lambda r: -r[1].metrics["total_return"]):
                 mine = result.metrics
-                beat = mine["total_return"] > hold["total_return"]
-                self.write(f"  {INK}{name:<14}{RESET}"
-                           + (GREEN if beat else RED) + f"{mine['total_return'] * 100:>9.1f}%" + RESET
-                           + f"{mine['sharpe']:>9.2f}{mine['max_drawdown'] * 100:>8.1f}%"
-                           f"{mine['trades']:>8}{mine['exposure'] * 100:>9.0f}%")
-            self.write(f"  {DIM}{'buy & hold':<14}{hold['total_return'] * 100:>9.1f}%"
-                       f"{hold['sharpe']:>9.2f}{hold['max_drawdown'] * 100:>8.1f}%{1:>8}{100:>9.0f}%{RESET}")
+                table.append([
+                    f"{INK}{name}{RESET}",
+                    ui.percent(mine["total_return"] * 100, 0),
+                    f"{mine['sharpe']:.2f}",
+                    f"{RED}{mine['max_drawdown'] * 100:.0f}%{RESET}",
+                    str(mine["trades"]),
+                    f"{mine['exposure'] * 100:.0f}%",
+                ])
+            table.append([f"{FAINT}buy & hold{RESET}",
+                          ui.percent(hold["total_return"] * 100, 0),
+                          f"{hold['sharpe']:.2f}",
+                          f"{RED}{hold['max_drawdown'] * 100:.0f}%{RESET}", "1", "100%"])
+            self.table(["strategy", "return", "sharpe", "max fall", "trades", "invested"],
+                       table, aligns="<>>>>>", trim=[5, 4])
             winners = [n for n, r in rows if r.metrics["total_return"] > hold["total_return"]]
-            self.write("")
-            self.para(f"{len(winners)} of {len(rows)} beat buying and holding "
-                      + (f"({', '.join(winners)})." if winners else "-- none of them."))
+            self.para(f"{len(winners)} of {len(rows)} beat buying and holding"
+                      + (f": {', '.join(winners)}." if winners else " -- none of them."))
         self.job(f"compare {len(names)} on {symbol}", work)
 
     def cmd_screen(self, args: list[str]) -> None:
         filters = " ".join(args)
-        symbols = quotes.watchlist() + [s for s in self.markets if not s.endswith("-USD")]
+        symbols = sorted(set(quotes.watchlist() + [s for s in self.markets
+                                                   if not s.endswith("-USD")]))
+        if self.session.where == "jugnu":
+            self._remote({"action": "screen", "symbols": symbols, "filters": filters},
+                         "screening",
+                         lambda reply: self._show_screen(reply["rows"], filters, len(symbols)))
+            return
+
         def work(entry):
             rows = screen.scan(sorted(set(symbols)), filters=filters)
-            self.rule(f"screen · {len(rows)} of {len(set(symbols))}"
-                      + (f" · {filters}" if filters else ""))
-            self.write(f"  {DIM}{'symbol':<9}{'price':>10}{'chg':>8}{'rsi':>6}{'vol':>6}"
-                       f"{'52w':>7}{'50d':>8}{'mom20':>8}  flags{RESET}")
+            self._show_screen(rows, filters, len(symbols))
+        self.job("screening", work)
+
+    def _show_screen(self, rows: list[dict], filters: str, total: int) -> None:
+        if True:
+            self.rule(f"screen  {len(rows)} of {total}"
+                      + (f"  {filters}" if filters else ""))
+            table = []
             for row in rows:
                 if "error" in row:
-                    self.write(f"  {row['symbol']:<9}{DIM}{row['error']}{RESET}")
+                    table.append([f"{INK}{row['symbol']}{RESET}", f"{FAINT}{row['error']}{RESET}",
+                                  "", "", "", "", ""])
                     continue
-                rsi_colour = GREEN if row["rsi"] <= 35 else (RED if row["rsi"] >= 65 else DIM)
-                self.write(
-                    f"  {INK}{row['symbol']:<9}{RESET}{money(row['price']):>10}"
-                    + pct(row["change"], 8) +
-                    f"{rsi_colour}{row['rsi']:>6.0f}{RESET}"
-                    f"{(AMBER if row['vol'] >= 2 else DIM)}{row['vol']:>6.1f}{RESET}"
-                    f"{DIM}{row['near_high'] * 100:>6.0f}%{RESET}"
-                    f"{(GREEN if row['above_sma50'] > 0 else RED)}{row['above_sma50']:>+7.1f}%{RESET}"
-                    f"{(GREEN if row['mom20'] > 0 else RED)}{row['mom20']:>+7.1f}%{RESET}"
-                    f"  {FAINT}{', '.join(row.get('flags', []))}{RESET}")
+                rsi_colour = GREEN if row["rsi"] <= 35 else (RED if row["rsi"] >= 65 else INK)
+                table.append([
+                    f"{INK}{row['symbol']}{RESET}",
+                    ui.money(row["price"]),
+                    ui.percent(row["change"]),
+                    f"{rsi_colour}{row['rsi']:.0f}{RESET}",
+                    (AMBER if row["vol"] >= 2 else FAINT) + f"{row['vol']:.1f}×" + RESET,
+                    f"{FAINT}{row['near_high'] * 100:.0f}%{RESET}",
+                    ui.percent(row["mom20"], 0),
+                    f"{FAINT}{', '.join(row.get('flags', []))}{RESET}",
+                ])
+            self.table(["symbol", "price", "day", "rsi", "vol", "52w", "20d", ""],
+                       table, aligns="<>>>>>><", trim=[5, 6, 4])
             if not filters:
-                self.write("")
-                self.para("filter it: `screen rsi<35`, `screen vol>2`, `screen near_high>0.97 trend=1`")
-        self.job("screening", work)
+                self.para("filter it: `screen rsi<35` · `screen vol>2` · "
+                          "`screen near_high>0.97 trend=1`", colour=FAINT)
 
     def cmd_correlation(self, args: list[str]) -> None:
         symbols = [a.upper() for a in args] or (quotes.watchlist() + ["SPY", "BTC-USD"])
@@ -1222,12 +1275,17 @@ class Terminal:
                 return
             if target in ("me", "local", "here", "primary"):
                 self.session.where = "local"
-                self.write(f"  {DIM}back to running here{RESET}")
+                self.write(f"{ui.GUTTER}{DIM}heavy commands now run in this session{RESET}")
+                rest = args[1:]
+                if rest:
+                    self.run_command(" ".join(rest))
                 return
         self.write(f"  {DIM}running {'in the Jugnu account' if self.session.where == 'jugnu' else 'here'}"
                    f" · `on jugnu` or `on me`{RESET}")
 
     def _remote(self, payload: dict, label: str, render_fn) -> None:
+        """Runs one action in the Jugnu account and renders the JSON it
+        sends back through the same panel the local path uses."""
         def work(entry):
             reply = remote.run(payload)
             if not reply.get("ok"):

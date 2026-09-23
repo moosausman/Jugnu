@@ -113,8 +113,25 @@ class RenderingTests(unittest.TestCase):
         self.assertNotIn(term.GREEN, term.pct(1.2, colour=False))
 
     def test_money_shortens_large_numbers(self):
+        # Abbreviated above 100k so columns stay narrow in an 80-wide window.
         self.assertEqual(term.money(12.5), "12.50")
-        self.assertEqual(term.money(112421.3), "112,421")
+        self.assertEqual(term.money(4210.0), "4,210")
+        self.assertEqual(term.money(112421.3), "112.4k")
+        self.assertEqual(term.money(4.95e12, "$"), "$4,950.0bn")
+
+    def test_nothing_a_panel_draws_is_wider_than_the_window(self):
+        from trading import ui
+        rows = ui.table(["symbol", "price", "change", "note"],
+                        [["AAPL", "339.75", "+2.54%", "a long trailing note " * 4]],
+                        width=80, trim=[3, 2])
+        for line in rows:
+            self.assertLessEqual(ui.width_of(line), 80)
+        for line in ui.note("word " * 80, 80):
+            self.assertLessEqual(ui.width_of(line), 80)
+        for line in ui.chart([([1.0, 5.0, 3.0, 9.0], "█", "")], width=80, height=4):
+            self.assertLessEqual(ui.width_of(line), 80)
+        for line in ui.stats([(f"label{i}", f"value{i}") for i in range(9)], width=80):
+            self.assertLessEqual(ui.width_of(line), 80)
 
     def test_every_command_maps_to_a_method(self):
         for name, handler in term.COMMANDS.items():

@@ -124,6 +124,23 @@ Commands: `q` `ch` `wl` `mkt` `screen` `corr` `alert` (prices and scanning),
 (what's running, and where), `fa` `opt` `source` (OpenBB), and four that
 spend a model call and say so: `build` `ask` `why` `explain`.
 
+**It fits the window.** `ui.py` holds the terminal's typography: every
+panel is built from `rule`, `stats`, `table`, `note`, `chart`, `bar`, and
+each takes the window width and respects it. Tables shed their least
+important columns rather than wrapping, prose wraps rather than truncating,
+charts size to the pane, and the market panel collapses to a one-line
+ticker below 96 columns or 28 rows. A test asserts no panel ever draws a
+line wider than the window, because the first version hardcoded column
+positions and turned into confetti at 80 columns.
+
+**Heavy work defaults to the Jugnu account.** When that session is up, the
+terminal points there on start: sweeps don't compete with the session
+you're typing in, and you never switch user. `on me` keeps work local;
+`on jugnu` sends it back. A job's `@jugnu` label means it actually ran
+there -- `bt`, `sweep`, `wf`, `risk`, `pf` and `screen` each have a remote
+path through `appapi`, and both paths render through the same panel
+function so the two can't drift.
+
 **Several at once.** Every heavy command becomes a numbered job
 (`jobs.py`): the prompt returns immediately, four run in parallel, a strip
 under the market panel shows what's in flight, and `job N` re-prints one.

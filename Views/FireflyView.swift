@@ -13,10 +13,29 @@ enum FireflyState: Equatable {
 ///
 /// Driven by one TimelineView clock instead of stacked `repeatForever`
 /// animations, so switching state never leaves an old animation fighting
-/// the new one, and nothing runs while the window is hidden.
+/// the new one.
+///
+/// The clock rate follows the state, and stops when the app isn't in
+/// front. This matters more than it sounds: the firefly appears in the
+/// header, the menu bar and the orb at once, and redrawing all of them 30
+/// times a second forever kept the app (and WindowServer, compositing every
+/// frame) busy while Jugnu sat there doing nothing.
 struct FireflyView: View {
     var state: FireflyState
     var size: CGFloat = 22
+
+    @State private var appActive = true
+
+    /// Frames a second. A 2.6-second hover reads as smooth at 8; only the
+    /// quick wing-beat while working needs more.
+    private var frameRate: Double {
+        guard appActive else { return 0 }
+        switch state {
+        case .thinking: return 24
+        case .idle: return 8
+        case .error: return 4
+        }
+    }
 
     private var glow: Color {
         switch state {
@@ -44,8 +63,32 @@ struct FireflyView: View {
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
+        Group {
+            if frameRate > 0 {
+                TimelineView(.animation(minimumInterval: 1.0 / frameRate)) { timeline in
+                    firefly(at: timeline.date.timeIntervalSinceReferenceDate)
+                }
+            } else {
+                // Nothing on screen is looking at it: one still frame.
+                firefly(at: 0)
+            }
+        }
+        .frame(width: size, height: size)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            appActive = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            // Keep moving while it's working -- that's the one case where
+            // the animation is information rather than decoration.
+            appActive = state == .thinking
+        }
+    }
+
+    @ViewBuilder
+    private func firefly(at t: Double) -> some View {
+        Group {
             let r = rhythm
             let bob = sin(t * 2 * .pi / r.bob)
             let wing = sin(t * 2 * .pi / r.wing)
@@ -87,9 +130,6 @@ struct FireflyView: View {
             .frame(width: size, height: size)
             .offset(y: -CGFloat(bob) * size * r.lift)
         }
-        .frame(width: size, height: size)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }
 
