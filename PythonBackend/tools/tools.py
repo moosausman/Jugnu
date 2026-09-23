@@ -15,6 +15,7 @@ from .notion_service import NotionService
 from .trading_tools import (
     backtest_strategy,
     open_trading_terminal,
+    run_in_trading_terminal,
     list_strategies,
     paper_trade,
     past_backtests,
@@ -2730,6 +2731,7 @@ _tool_functions = [
     paper_trade,
     past_backtests,
     open_trading_terminal,
+    run_in_trading_terminal,
 ]
 
 FUNCTIONS = {f.__name__: f for f in _tool_functions}

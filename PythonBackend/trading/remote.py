@@ -179,6 +179,52 @@ def open_terminals(count: int = 1, commands: list[str] | None = None, tile: bool
     return opened
 
 
+def _as_string(text: str) -> str:
+    """`text` as an AppleScript string literal."""
+    return '"' + str(text).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def type_script(command: str, window: int = 1) -> str:
+    """AppleScript that types `command` into an open Jugnu terminal, the way
+    the person sitting there would. `window` 0 means every one of them."""
+    return "\n".join([
+        'tell application "Terminal"',
+        "  set hits to {}",
+        "  repeat with w in windows",
+        '    if name of w contains "trading term" then set end of hits to w',
+        "  end repeat",
+        '  if (count of hits) = 0 then return "none"',
+        f"  if {int(window)} = 0 then",
+        "    repeat with w in hits",
+        f"      do script {_as_string(command)} in w",
+        "    end repeat",
+        '    return "sent " & (count of hits)',
+        "  end if",
+        f'  if {int(window)} > (count of hits) then return "none"',
+        f"  do script {_as_string(command)} in (item {int(window)} of hits)",
+        '  return "sent 1"',
+        "end tell",
+    ])
+
+
+def type_into_terminals(command: str, window: int = 1) -> int:
+    """Types `command` into the Jugnu account's open terminals. Returns how
+    many got it -- 0 when none are open, so the caller can open one."""
+    script = type_script(command, window)
+    try:
+        reply = post_json(f"http://127.0.0.1:{AGENT_PORT}/shell/run",
+                          {"args": {"command": f"osascript -e {_quote(script)}", "timeout": 30}},
+                          timeout=50)
+    except HttpError as e:
+        raise RemoteError(f"The Jugnu account isn't answering ({e}).") from e
+    if reply.get("ok") is False:
+        raise RemoteError(str(reply.get("error") or reply.get("stderr") or "couldn't reach it"))
+    out = str(reply.get("stdout") or "").strip()
+    if out.startswith("sent"):
+        return int(out.split()[-1])
+    return 0
+
+
 def _shell_quote(text: str) -> str:
     """A command going through AppleScript into a shell: quote it for the
     shell, then leave AppleScript's own quoting to _quote()."""

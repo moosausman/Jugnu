@@ -342,6 +342,59 @@ def open_trading_terminal(count: int = 1, session: str = "", commands: list = No
     return {"ok": True, "opened": count, "running": commands, "where": "your account"}
 
 
+def run_in_trading_terminal(command: str, session: str = "", window: int = 1) -> dict:
+    """Type a command into a trading terminal that is ALREADY OPEN, as if the
+    person sitting there had typed it. Use this whenever they refer to a
+    terminal that's open -- "run signals on the terminal open in jugnu",
+    "backtest TSLA in the second window" -- instead of answering from your
+    own tools, which puts the answer somewhere they aren't looking.
+
+    Takes the same commands as open_trading_terminal (see its list); `;`
+    chains several. If no terminal is open it opens one running the command,
+    so the request still lands.
+
+    Args:
+        command: The terminal command, e.g. "signals" or "bt sma AAPL 2015".
+        session: "jugnu" for the Jugnu account's desktop, "me" for here.
+            Empty follows the account this task is running in.
+        window: Which open terminal, 1 being the first. 0 sends it to every
+            open trading terminal at once.
+    """
+    import subprocess
+
+    from trading import remote
+
+    from . import macbridge
+
+    command = " ".join(str(command or "").split())
+    if not command:
+        return _fail("Tell me which command to run.")
+    where = (session or "").strip().lower() or macbridge.active_session()
+    remote_side = where in ("jugnu", "agent", "other", "second")
+    place = "the Jugnu account" if remote_side else "your account"
+    try:
+        if remote_side:
+            sent = remote.type_into_terminals(command, window)
+        else:
+            script = remote.type_script(command, window)
+            done = subprocess.run(["osascript", "-e", script], capture_output=True,
+                                  text=True, timeout=45)
+            if done.returncode != 0:
+                return _fail((done.stderr or "couldn't reach Terminal").strip()[:200])
+            out = done.stdout.strip()
+            sent = int(out.split()[-1]) if out.startswith("sent") else 0
+    except remote.RemoteError as e:
+        return _fail(str(e))
+    if sent:
+        return {"ok": True, "ran": command, "terminals": sent, "where": place}
+    # Nothing open: opening one running it beats reporting failure.
+    opened = open_trading_terminal(1, session, [command])
+    if not opened.get("ok"):
+        return opened
+    return {"ok": True, "ran": command, "terminals": 1, "where": place,
+            "note": "No terminal was open there, so I opened one running it."}
+
+
 def _screen() -> tuple:
     """This display, in the coordinates AppleScript uses for window bounds."""
     import subprocess

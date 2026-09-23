@@ -78,11 +78,15 @@ def summary(rows: list[dict]) -> str:
     changed = [r for r in rows if r.get("changed")]
     if not changed:
         return "Nothing changed today: every strategy says the same as yesterday."
-    entries = [r for r in changed if r["state"] == "enter"]
-    exits = [r for r in changed if r["state"] == "out"]
+    def names(state: str) -> str:
+        return ", ".join(f"{r['strategy']} on {r['symbol']}" for r in changed if r["state"] == state)
+
     parts = []
-    if entries:
-        parts.append("would open: " + ", ".join(f"{r['strategy']} on {r['symbol']}" for r in entries))
-    if exits:
-        parts.append("would close: " + ", ".join(f"{r['strategy']} on {r['symbol']}" for r in exits))
+    # "hold" belongs here too. Leaving it out meant a day when every change
+    # was out -> hold printed "Changed today -- ." and named nothing.
+    for state, phrase in (("enter", "would open"), ("out", "would close"),
+                          ("hold", "would stay in, but wouldn't open here")):
+        listed = names(state)
+        if listed:
+            parts.append(f"{phrase}: {listed}")
     return "Changed today -- " + "; ".join(parts) + "."

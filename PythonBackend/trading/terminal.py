@@ -424,10 +424,19 @@ class Terminal:
                     self.draw()
                 ready, _, _ = select.select([sys.stdin], [], [], 0.12)
                 if ready:
-                    char = sys.stdin.read(1)
-                    if char == "\x03":            # ctrl-C
+                    # Take the whole burst at once. One character per
+                    # pass still arrives, but a pasted command then costs
+                    # one redraw per letter -- the line crawls in.
+                    try:
+                        data = os.read(sys.stdin.fileno(), 4096)
+                    except OSError:
+                        continue
+                    if not data:
+                        continue
+                    if b"\x03" in data:           # ctrl-C
                         break
-                    self.key(char)
+                    for char in data.decode("utf8", "replace"):
+                        self.key(char)
         finally:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
             sys.stdout.write(ui.FULL_RESET + "\x1b[?1049l\x1b[?25h")

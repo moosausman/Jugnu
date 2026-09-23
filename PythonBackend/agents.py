@@ -223,7 +223,8 @@ AGENTS = {
         # waits for the user's approval.
         tool_names=[
             "window_list", "window_focus", "speak", "music_control", "system_info", "permissions_check",
-            "open_app", "close_app", "open_trading_terminal", "notifications_send",
+            "open_app", "close_app", "open_trading_terminal", "run_in_trading_terminal",
+            "notifications_send",
             "current_session", "set_target_session",
             "play_song", "play_artist", "play_album", "play_playlist", "spotify_search", "spotify_play_uri",
             "spotify_now_playing", "spotify_control",

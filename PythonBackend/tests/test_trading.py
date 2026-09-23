@@ -255,5 +255,23 @@ class ToolTests(unittest.TestCase):
         self.assertIn("best", out)
 
 
+class SignalSummaryTests(unittest.TestCase):
+    def test_every_change_is_named(self):
+        """A change into `hold` is still a change. It used to fall through
+        both lists and print "Changed today -- ." with nothing in it."""
+        from trading import signals
+        for state in ("enter", "out", "hold"):
+            line = signals.summary([{"symbol": "NVDA", "strategy": "rsi",
+                                     "state": state, "was": "?", "changed": True}])
+            self.assertIn("NVDA", line, state)
+            self.assertNotIn("-- .", line, state)
+
+    def test_a_quiet_day_says_so(self):
+        from trading import signals
+        self.assertIn("Nothing changed",
+                      signals.summary([{"symbol": "NVDA", "strategy": "rsi",
+                                        "state": "out", "changed": False}]))
+
+
 if __name__ == "__main__":
     unittest.main()

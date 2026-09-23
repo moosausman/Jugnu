@@ -35,6 +35,10 @@ class Intent:
     args: dict = field(default_factory=dict)
     describe: Callable[[dict], str] = lambda raw: "Done."
     session: Optional[str] = None     # None = the run's default session
+    # A second call, run only if the first one worked. "Play X at max
+    # volume" is two actions and one sentence; without this the volume
+    # half was silently swallowed into the artist's name.
+    then: Optional["Intent"] = None
 
 
 # ---------------------------------------------------------------------------
@@ -63,8 +67,45 @@ def _clean(text: str) -> str:
     return _TAIL.sub("", text).strip()
 
 
+# "on spotify" anywhere, not just at the end -- and whatever short word
+# precedes it, because "pn spotify" is one slipped key and the artist is
+# not called "hania amir pn spotify".
+_ON_SPOTIFY = re.compile(r"[\s,]+(?:\S{1,4}\s+)?spotify\b", re.I)
+
+_LOUDNESS = {"max": 100, "maximum": 100, "full": 100, "highest": 100, "loudest": 100,
+             "high": 85, "loud": 85, "half": 50, "low": 25, "lowest": 10,
+             "min": 10, "minimum": 10, "quiet": 20, "quietly": 20}
+
+# A loudness clause at the end of a play request: "at max volume",
+# "on full volume", "at volume 40", "at 40% volume", "at full blast".
+_VOLUME_CLAUSE = re.compile(
+    r"[\s,]+(?:at|on|with|in)\s+(?:the\s+)?(?:"
+    r"(?P<word>max|maximum|full|highest|loudest|high|loud|half|low|lowest|min|minimum|quiet|quietly)"
+    r"\s+volume"
+    r"|volume\s+(?P<after>\d{1,3})\s*(?:%|percent)?"
+    r"|(?P<before>\d{1,3})\s*(?:%|percent)?\s+volume"
+    r")$"
+    r"|[\s,]+(?:at\s+)?(?:full\s+blast|max(?:imum)?)$", re.I)
+
+
 def _strip_spotify(obj: str) -> str:
-    return re.sub(r"\s+(?:on|in|from|with) spotify$", "", obj, flags=re.I).strip()
+    return _ON_SPOTIFY.sub("", obj).strip().strip(",")
+
+
+def _split_volume(obj: str) -> tuple[str, Optional[int]]:
+    """The request without its loudness clause, and the level it asked for."""
+    match = _VOLUME_CLAUSE.search(obj)
+    if not match:
+        return obj, None
+    word = match.groupdict().get("word")
+    digits = match.groupdict().get("after") or match.groupdict().get("before")
+    if digits is not None:
+        level = int(digits)
+        if not 0 <= level <= 100:
+            return obj, None          # "at volume 900" isn't a volume
+    else:
+        level = _LOUDNESS.get((word or "max").lower(), 100)
+    return obj[:match.start()].strip().strip(","), level
 
 
 def _session_hint(text: str) -> Optional[str]:
@@ -100,8 +141,14 @@ def parse(text: str) -> Optional[Intent]:
     # -- play <something> -------------------------------------------------------
     m = re.fullmatch(r"play (.+)", t, flags=re.I)
     if m:
-        return _parse_play(_strip_spotify(m.group(1)))
-
+        # Strip the loudness clause before parsing, or it ends up inside
+        # the artist and the search finds nothing.
+        obj, level = _split_volume(_strip_spotify(m.group(1)))
+        intent = _parse_play(obj) if obj else None
+        if intent is not None and level is not None:
+            intent.then = Intent("spotify_control", {"volume": level},
+                                 lambda r, v=level: f"Volume at {v}%.", "primary")
+        return intent
     # -- open <app> -----------------------------------------------------------------
     m = re.fullmatch(r"(?:open|launch|start) (?:up )?(?:the )?(.+?)(?: app)?", t, flags=re.I)
     if m:
@@ -241,7 +288,15 @@ def try_handle(text: str, session: Optional[str] = None) -> Optional[str]:
     outcome = tool_runtime.execute(intent.tool, intent.args, FUNCTIONS, _SCHEMAS_BY_NAME, ctx=ctx)
     if outcome.ok:
         raw = outcome.raw if isinstance(outcome.raw, dict) else {}
-        return intent.describe(raw)
+        reply = intent.describe(raw)
+        if intent.then is not None:
+            after = tool_runtime.execute(intent.then.tool, intent.then.args, FUNCTIONS,
+                                         _SCHEMAS_BY_NAME, ctx=ctx)
+            if after.ok:
+                reply += " " + intent.then.describe(after.raw if isinstance(after.raw, dict) else {})
+            else:
+                reply += " I couldn't set the volume, though."
+        return reply
     if outcome.error_type in (tool_runtime.ErrorType.OS_PERMISSION, tool_runtime.ErrorType.POLICY_DENIED,
                               tool_runtime.ErrorType.USER_DENIED):
         return agent_core._stop_message(outcome)

@@ -113,6 +113,7 @@ TOOL_POLICIES: dict[str, ToolPolicy] = {
     "past_backtests": ToolPolicy(R, "trading"),
     "paper_trade": ToolPolicy(L, "trading", note="simulated account only; no broker, no money"),
     "open_trading_terminal": ToolPolicy(L, "trading", note="opens Terminal windows running the simulator"),
+    "run_in_trading_terminal": ToolPolicy(L, "trading", note="types a command into an open simulator window"),
     "schedule_task": ToolPolicy(L, "scheduling", note="runs later under the same approval rules"),
     "set_timer": ToolPolicy(L, "notifications"), "list_scheduled_tasks": ToolPolicy(R, "scheduling"),
     "cancel_scheduled_task": ToolPolicy(L, "scheduling"),

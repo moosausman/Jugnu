@@ -490,11 +490,17 @@ def execute_plan(plan, recent_context="", on_task_start=None, on_status=None, on
 # ---------------------------------------------------------------------------
 
 _SYNTHESIS_RULES = """Write the reply to the user from the results above.
-- Lead with the outcome in one or two sentences.
-- Then, only as much as is useful: what was done and what changed (exact
-  file paths, event names/times, links), and anything that still needs the
-  user's attention (steps that failed or were declined, permissions needed,
-  gaps the verifier found). Keep it scannable -- short lines or bullets.
+- Say what happened, in your own voice, as the one who just did it. One or
+  two sentences is usually the whole reply.
+- NO headings, NO "What was done" / "Results summary" / "Current status"
+  sections, no bold field labels, no status report. They asked for
+  something to happen, not for a write-up of it happening. "Started a paper
+  account on AAPL -- it bought 29 shares at $341." is the whole answer.
+- Add detail only where it earns its place: exact file paths, event names
+  and times, links, the numbers they actually asked for. Use bullets only
+  for a real list of several things; never for one or two.
+- Anything still needing them -- a step that failed or was declined, a
+  permission, a gap found -- say plainly in a sentence, not as a section.
 - If assumptions were made, name them in one short line so the user can
   correct them.
 - For research, cite sources as links next to the claims they support.

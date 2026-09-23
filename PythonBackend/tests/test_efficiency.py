@@ -47,6 +47,32 @@ class FastPathParseTests(unittest.TestCase):
         intent = fastpath.parse(text)
         return (intent.tool, intent.args) if intent else None
 
+    def test_a_loudness_clause_is_not_part_of_the_artist(self):
+        """"play pablo by hania amir on spotify at max volume" searched
+        Spotify for an artist called "hania amir on spotify at max volume"
+        and, of course, found nothing."""
+        intent = fastpath.parse("play pablo by hania amir on spotify at max volume")
+        self.assertEqual(intent.args, {"song": "pablo", "artist": "hania amir"})
+        self.assertEqual(intent.then.tool, "spotify_control")
+        self.assertEqual(intent.then.args, {"volume": 100})
+
+    def test_one_slipped_key_before_spotify_still_parses(self):
+        intent = fastpath.parse("play pablo by hania amir pn spotify")
+        self.assertEqual(intent.args, {"song": "pablo", "artist": "hania amir"})
+
+    def test_loudness_forms(self):
+        for text, level in [("play levitating by dua lipa at volume 40", 40),
+                            ("play some drake at full blast", 100),
+                            ("play blinding lights at 20% volume", 20),
+                            ("play blinding lights at low volume", 25)]:
+            intent = fastpath.parse(text)
+            self.assertIsNotNone(intent.then, text)
+            self.assertEqual(intent.then.args["volume"], level, text)
+
+    def test_a_title_that_merely_mentions_volume_is_left_alone(self):
+        self.assertEqual(self.parsed("play stand by me"), ("play_song", {"song": "stand by me"}))
+        self.assertIsNone(fastpath.parse("play blinding lights at volume 900").then)
+
     def test_music_requests(self):
         self.assertEqual(self.parsed("play levitating by dua lipa"),
                          ("play_song", {"song": "levitating", "artist": "dua lipa"}))
