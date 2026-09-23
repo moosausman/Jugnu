@@ -69,7 +69,9 @@ def _params(params) -> dict:
 def list_strategies() -> dict:
     """List the trading strategies available to backtest or paper trade.
 
-    Returns each strategy's name, what it does, and its default parameters.
+    Use this whenever the user asks what strategies exist, what they have,
+    or what they can test -- the answer is this list, not a guess, and it
+    includes any strategy they wrote themselves.
     """
     return {"ok": True, "strategies": strategies.describe()}
 
@@ -79,15 +81,25 @@ def backtest_strategy(symbol: str, strategy: str = "sma", start: str = "", end: 
                       commission: float = 1.0, interval: str = "1d") -> dict:
     """Backtest a trading strategy on historical prices. Simulation only -- no real money.
 
-    Always reports buy-and-hold over the same period for comparison, and any
-    warnings (underperformance, too few trades, costs killing the edge).
+    The result ALWAYS includes buy-and-hold over the same period, with the
+    same costs, as `benchmark_return`. Never run a second backtest with
+    strategy="hold" to compare -- that answer is already in the first one.
 
     Args:
         symbol: Ticker, e.g. AAPL, RY.TO (Toronto), BTC-USD.
-        strategy: One of the names from list_strategies (sma, rsi, breakout, volatility, hold).
+        strategy: Which strategy to run:
+            "sma" -- moving-average crossover (a "20/100 crossover" is
+                sma with params "fast=20 slow=100"),
+            "rsi" -- buy oversold, sell recovered (params length, buy_below, sell_above),
+            "breakout" -- buy new highs, exit new lows (params lookback, exit),
+            "volatility" -- always invested, sized to a volatility target,
+            "hold" -- buy and never trade; only for "what if I just held?",
+            or the name of a strategy the user wrote with `build`.
         start: Optional first day, YYYY-MM-DD.
         end: Optional last day, YYYY-MM-DD.
-        params: Optional strategy parameters, e.g. "fast=20 slow=100".
+        params: Strategy parameters as "name=value" pairs, e.g. "fast=20 slow=100"
+            for a 20/100 crossover, or "length=14 buy_below=30" for RSI. Pass the
+            numbers the user actually named; leave empty for the defaults.
         cash: Starting cash for the simulation.
         slippage_bps: Assumed slippage per trade in basis points (5 = 0.05%).
         commission: Assumed commission per trade, in dollars.
@@ -251,15 +263,22 @@ def open_trading_terminal(count: int = 1, session: str = "") -> dict:
     Args:
         count: How many terminal windows to open (1-8).
         session: "jugnu" opens them on the Jugnu account's desktop (watch
-            them with Jugnu's Desk), "me" opens them here. Default: here.
+            them with Jugnu's Desk), "me" opens them here. Left empty, they
+            open wherever this task is running -- which is what the account
+            picker in Jugnu's window selects.
     """
     import subprocess
     from pathlib import Path
 
     from trading import remote
 
+    from . import macbridge
+
     count = max(1, min(8, int(count or 1)))
-    where = (session or "").strip().lower()
+    # Follow the task's account unless told otherwise. Everything else Jugnu
+    # does goes through MacBridge, which routes by session automatically;
+    # this tool opens a window itself, so it has to ask.
+    where = (session or "").strip().lower() or macbridge.active_session()
     if where in ("jugnu", "agent", "other", "second"):
         try:
             opened = remote.open_terminals(count)
@@ -282,7 +301,7 @@ def open_trading_terminal(count: int = 1, session: str = "") -> dict:
                                 timeout=45)
         if result.returncode != 0:
             return _fail((result.stderr or "couldn't open Terminal").strip()[:200])
-    return {"ok": True, "opened": count, "where": "this account"}
+    return {"ok": True, "opened": count, "where": "your account"}
 
 
 def past_backtests(limit: int = 10) -> dict:

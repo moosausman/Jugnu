@@ -80,26 +80,46 @@ struct MarkdownText: View {
             Rectangle().fill(Theme.border).frame(height: 1).padding(.vertical, 4)
 
         case .table(let header, let rows):
-            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 5) {
+            // A table is a panel, not loose text: headers in small caps over
+            // a rule, rows on a steady rhythm, figures in lining digits so
+            // columns of numbers line up.
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 7) {
                 GridRow {
                     ForEach(Array(header.enumerated()), id: \.offset) { _, cell in
-                        Text(inline(cell)).font(Theme.text(size - 1, weight: .semibold)).foregroundStyle(color)
+                        Text(inline(cell).uppercasedForHeader)
+                            .font(Theme.text(size - 3.5, weight: .semibold))
+                            .tracking(0.6)
+                            .foregroundStyle(Theme.inkFaint)
                     }
                 }
-                Rectangle().fill(Theme.border).frame(height: 1).gridCellUnsizedAxes(.horizontal)
+                Rectangle().fill(Theme.border).frame(height: 1)
+                    .gridCellUnsizedAxes(.horizontal)
+                    .gridCellColumns(max(1, header.count))
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                     GridRow {
                         ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                            Text(inline(cell)).font(Theme.text(size - 1)).foregroundStyle(color)
+                            Text(inline(cell))
+                                .font(Theme.text(size - 1))
+                                .monospacedDigit()
+                                .foregroundStyle(color)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
             }
+            .padding(.vertical, 9)
+            .padding(.horizontal, 12)
+            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Theme.panel))
+            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Theme.border, lineWidth: 1))
+            .padding(.vertical, 2)
         }
     }
 
     private func inline(_ text: String) -> AttributedString {
+        inlineMarkdown(text)
+    }
+
+    private func inlineMarkdown(_ text: String) -> AttributedString {
         (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(text)
     }
@@ -236,4 +256,15 @@ enum MarkdownBlock: Equatable {
     }
     .frame(width: 380, height: 600)
     .background(Theme.windowBackground)
+}
+
+
+extension AttributedString {
+    /// Header text for a table: the wording the model wrote, set as a label.
+    var uppercasedForHeader: AttributedString {
+        var copy = self
+        copy.characters.replaceSubrange(copy.startIndex..<copy.endIndex,
+                                        with: String(copy.characters).uppercased())
+        return copy
+    }
 }

@@ -11,10 +11,19 @@ struct ConversationView: View {
         appState.messages.filter { $0.role != .tool && !$0.content.isEmpty }
     }
 
+    private func scrim(_ edge: VerticalAlignment) -> some View {
+        LinearGradient(colors: edge == .top
+                       ? [Theme.windowBackground, Theme.windowBackground.opacity(0)]
+                       : [Theme.windowBackground.opacity(0), Theme.windowBackground],
+                       startPoint: .top, endPoint: .bottom)
+            .frame(height: edge == .top ? 14 : 18)
+            .allowsHitTesting(false)
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
+                LazyVStack(alignment: .leading, spacing: 20) {
                     ForEach(messages) { message in
                         MessageRow(message: message).id(message.id)
                     }
@@ -39,10 +48,15 @@ struct ConversationView: View {
                     Color.clear.frame(height: 1).id(Self.bottom)
                 }
                 .padding(.horizontal, 18)
-                .padding(.top, 8)
-                .padding(.bottom, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 18)
             }
             .scrollIndicators(.automatic)
+            // Text passing under the header used to be sliced by a hard
+            // edge. A short scrim at each end lets it fade instead, which
+            // is the difference between a window and a product.
+            .overlay(alignment: .top) { scrim(.top) }
+            .overlay(alignment: .bottom) { scrim(.bottom) }
             .overlay {
                 if messages.isEmpty && !appState.thinking && appState.errorMessage == nil {
                     EmptyState(appState: appState)
@@ -201,6 +215,7 @@ private struct EmptyState: View {
     private let suggestions = [
         ("music.note", "Play some lo-fi"),
         ("calendar", "What's on my calendar today?"),
+        ("chart.line.uptrend.xyaxis", "Backtest a 20/100 crossover on AAPL"),
         ("sun.max", "Summarize my day"),
     ]
 
@@ -216,13 +231,14 @@ private struct EmptyState: View {
                     .font(Theme.text(12))
                     .foregroundStyle(Theme.inkFaint)
             }
-            VStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 7) {
                 ForEach(suggestions, id: \.1) { symbol, text in
                     SuggestionButton(symbol: symbol, text: text) { appState.send(text) }
                         .disabled(appState.statusLabel != "ready")
                 }
             }
-            .padding(.top, 6)
+            .frame(maxWidth: 300)          // one column, one edge, not a ragged fan
+            .padding(.top, 10)
         }
         .padding(.bottom, 20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -237,16 +253,28 @@ private struct SuggestionButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 7) {
-                Image(systemName: symbol).font(.system(size: 11)).foregroundStyle(Theme.clay.opacity(0.9))
-                Text(text).font(Theme.text(12)).foregroundStyle(hovering ? Theme.ink : Theme.inkDim)
+            HStack(spacing: 9) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Theme.clay.opacity(hovering ? 1 : 0.85))
+                    .frame(width: 15)                    // icons on one axis
+                Text(text).font(Theme.text(12.5)).foregroundStyle(hovering ? Theme.ink : Theme.inkDim)
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.inkFaint)
+                    .opacity(hovering ? 1 : 0)
             }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 6)
-            .background(Capsule().fill(hovering ? Theme.panelRaised : Theme.panel))
-            .overlay(Capsule().stroke(Theme.border, lineWidth: 1))
-            .contentShape(Capsule())
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(hovering ? Theme.panelRaised : Theme.panel))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(hovering ? Theme.clay.opacity(0.35) : Theme.border, lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
+        .animation(Theme.Motion.snappy, value: hovering)
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
     }

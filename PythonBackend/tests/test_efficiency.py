@@ -17,6 +17,31 @@ from fake_llm import FakeLLM, is_planner
 from tools import tools as tools_module
 
 
+class RoutingTests(unittest.TestCase):
+    """Where a request goes decides whether it gets tools at all. Both of
+    these were wrong: a question about the user's own things took the
+    no-tools "answer" route and got made up."""
+
+    def test_questions_about_their_own_things_never_skip_the_tools(self):
+        for text in ["what trading strategies do i have available?",
+                     "do i have any paper accounts?",
+                     "what's on my watchlist"]:
+            self.assertNotEqual(router.direct_agent(text), "answer", text)
+
+    def test_general_knowledge_still_answers_without_tools(self):
+        self.assertEqual(router.direct_agent("what is the capital of France"), "answer")
+        self.assertEqual(router.direct_agent("explain how a diode works"), "answer")
+
+    def test_trading_requests_reach_the_trading_agent(self):
+        for text in ["backtest a 20/100 crossover on AAPL",
+                     "how's my paper trading doing",
+                     "what was the max drawdown"]:
+            self.assertEqual(router.direct_agent(text), "trading", text)
+
+    def test_opening_a_terminal_is_a_desktop_action(self):
+        self.assertEqual(router.direct_agent("open 2 trading terminals"), "system")
+
+
 class FastPathParseTests(unittest.TestCase):
     def parsed(self, text):
         intent = fastpath.parse(text)

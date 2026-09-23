@@ -116,7 +116,16 @@ _DOMAINS = [
     ("files", re.compile(r"\b(?:files?|folders?|downloads|desktop|documents|pdf|finder|rename|unzip|zip)\b", re.I)),
     ("browser", re.compile(r"\b(?:safari|tabs?|website|webpage|url)\b", re.I)),
     ("memory", re.compile(r"^(?:remember|forget|note that|don'?t forget)\b|\bwhat do you (?:know|remember)\b", re.I)),
+    ("trading", re.compile(r"\bback ?test(?:ed|ing|s)?\b|\bpaper trad\w+|\btrading terminal\b|"
+                           r"\btrading strateg(?:y|ies)\b|\bsharpe\b|\bdrawdown\b|\bslippage\b|"
+                           r"\bbuy and hold\b|\bwalk[- ]forward\b|\bmax drawdown\b", re.I)),
 ]
+
+# Questions about the user's own things -- their files, their accounts,
+# what they have -- cannot be answered from the model's own knowledge, so
+# they never take the no-tools "answer" route however they're phrased.
+_ABOUT_THEIR_STUFF = re.compile(r"\b(?:do i have|have i got|my own|available to me|i have|"
+                                r"mine)\b|\bmy \w+", re.I)
 
 # Plain questions a model answers from its own knowledge: no tools, one call.
 _ANSWERABLE = re.compile(r"^(?:what|why|how|who|explain|define|describe|tell me (?:a|about)|write (?:me )?a "
@@ -134,7 +143,8 @@ def direct_agent(text: str) -> str | None:
     matched = [name for name, pattern in _DOMAINS if pattern.search(t)]
     if len(matched) == 1:
         return matched[0]
-    if not matched and _ANSWERABLE.search(t) and not _TIME_SENSITIVE.search(t):
+    if (not matched and _ANSWERABLE.search(t) and not _TIME_SENSITIVE.search(t)
+            and not _ABOUT_THEIR_STUFF.search(t)):
         return "answer"
     return None
 
