@@ -207,8 +207,9 @@ AGENTS = {
     "system": Agent(
         name="system",
         exclusive=True,
-        role="Opens/closes apps, plays music on Spotify (songs, artists, albums, playlists -- in the "
-             "background), controls volume/sleep/lock/battery, sends "
+        role="Opens/closes apps (including the Jugnu trading terminal -- one or several windows, "
+             "here or on the Jugnu account), plays music on Spotify (songs, artists, albums, "
+             "playlists -- in the background), controls volume/sleep/lock/battery, sends "
              "notifications, manages the clipboard, reveals files in Finder, runs AppleScript "
              "and named Shortcuts.",
         # Fixed: was "notification" (no such tool -- tools.py defines
@@ -222,7 +223,7 @@ AGENTS = {
         # waits for the user's approval.
         tool_names=[
             "window_list", "window_focus", "speak", "music_control", "system_info", "permissions_check",
-            "open_app", "close_app", "notifications_send",
+            "open_app", "close_app", "open_trading_terminal", "notifications_send",
             "current_session", "set_target_session",
             "play_song", "play_artist", "play_album", "play_playlist", "spotify_search", "spotify_play_uri",
             "spotify_now_playing", "spotify_control",
@@ -300,7 +301,7 @@ AGENTS = {
     "trading": Agent(
         name="trading",
         role="Backtests trading strategies on historical prices, checks whether an edge survives "
-             "costs and out-of-sample testing, and runs paper accounts with imaginary money. "
+             "costs and out-of-sample testing, runs paper accounts with imaginary money, and "
              "Simulation only: it never buys anything and never advises what to buy.",
         autonomous_safe=True,   # public prices in, arithmetic out
         tool_names=[

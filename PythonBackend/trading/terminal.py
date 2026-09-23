@@ -132,7 +132,10 @@ class Terminal:
 
     def draw(self) -> None:
         size = shutil.get_terminal_size((100, 30))
-        width, height = max(72, size.columns), max(20, size.lines)
+        # One column short of the real width, always. Writing into the last
+        # cell makes most terminals wrap to the next line, which pushed
+        # every following row one line down and scattered the screen.
+        width, height = max(30, size.columns - 1), max(10, size.lines)
         rows: list[str] = []
         rows.append(self._title(width))
         rows += self._markets(width)
@@ -152,26 +155,37 @@ class Terminal:
 
         rows.append(self._status(width))
         rows.append(self._prompt(width))
-        sys.stdout.write("\x1b[H" + "\n".join(fit(r, width) for r in rows[:height]))
-        sys.stdout.write("\x1b[J")
+        # CR before LF: the terminal is in raw mode, where "\n" moves down
+        # a line without returning to column 0. Without the "\r" every row
+        # started where the last one ended, which is what turned the screen
+        # into a staircase of fragments. \x1b[K clears the rest of each line
+        # instead of padding it, so a redraw can't leave debris behind.
+        painted = []
+        for row in rows[:height]:
+            # Bars carry their own shade; everything else gets the page
+            # colour, so the window's profile never shows through.
+            background = ui.BG_BAR if row.startswith(ui.BG_BAR) else ui.BG
+            painted.append(background + fit(row, width) + "\x1b[K" + ui.BG_RESET)
+        sys.stdout.write("\x1b[H" + "\r\n".join(painted) + "\x1b[J" + ui.FULL_RESET)
         # Park the cursor at the end of what's typed.
         sys.stdout.write(f"\x1b[{height};{min(width, visible(self._prompt(width, cursor=True)) + 1)}H")
         sys.stdout.flush()
 
     def _title(self, width: int) -> str:
-        import llm_client
         clock = time.strftime("%a %d %b  %H:%M:%S")
-        mode = llm_client.model_mode()
+        llm = model()
+        mode = llm.model_mode() if llm else "no model"
         narrow = width < 100
         place = "@jugnu" if self.session.where == "jugnu" else "@here"
-        left = f"{BAR}{BOLD}{CLAY} JUGNU {RESET}{BAR}{FAINT} {place}{RESET}" if narrow else (
-            f"{BAR}{BOLD}{CLAY} JUGNU TERMINAL {RESET}{BAR}{FAINT} paper · simulation only · "
+        bar = ui.BG_BAR
+        left = f"{bar}{BOLD}{CLAY} JUGNU {RESET}{bar}{DIM} {place}{RESET}" if narrow else (
+            f"{bar}{BOLD}{CLAY} JUGNU TERMINAL {RESET}{bar}{DIM} paper · simulation only · "
             + ("runs in the Jugnu account" if self.session.where == "jugnu" else "runs here")
             + RESET)
         clock_text = time.strftime("%H:%M") if narrow else clock
-        right = f"{BAR}{FAINT}{mode}  {clock_text} {RESET}"
+        right = f"{bar}{DIM}{mode}  {clock_text} {RESET}"
         gap = max(1, width - visible(left) - visible(right))
-        return left + BAR + " " * gap + right
+        return left + bar + " " * gap + right + RESET
 
     def _markets(self, width: int) -> list[str]:
         """Two columns in a wide window, one compact ticker in a narrow or
@@ -244,11 +258,13 @@ class Terminal:
         else:
             text = f"{DIM}{self.session.status or 'ready'}{RESET}"
         right = f"{FAINT}F1 help · ↑ history · ^C quit{RESET}"
-        gap = max(1, width - visible(text) - visible(right) - 2)
-        return " " + text + " " * gap + right + " "
+        gap = max(1, width - visible(text) - visible(right) - 3)
+        return f"{ui.BG_BAR} " + text + " " * gap + right + f" {RESET}"
 
     def _prompt(self, width: int, cursor: bool = False) -> str:
-        return f"{CLAY}> {RESET}{INK}{self.buffer}{RESET}" if not cursor else f"> {self.buffer}"
+        if cursor:
+            return f"  > {self.buffer}"
+        return f"{ui.BG}  {CLAY}❯{RESET} {INK}{self.buffer}{RESET}"
 
     # -- input -------------------------------------------------------------
 
@@ -364,7 +380,7 @@ class Terminal:
                     self.key(char)
         finally:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
-            sys.stdout.write("\x1b[?1049l\x1b[?25h")
+            sys.stdout.write(ui.FULL_RESET + "\x1b[?1049l\x1b[?25h")
             sys.stdout.flush()
 
     def _check_alerts(self) -> None:
@@ -374,25 +390,48 @@ class Terminal:
 
     def banner(self) -> None:
         loaded = authoring.load_saved()
-        self.write(
-            f"{BOLD}{CLAY}Jugnu terminal{RESET}  {DIM}paper trading and research. Nothing here can place a real order.{RESET}",
-            "",
-            f"  {INK}bt sma AAPL 2015{RESET}      {DIM}backtest, with buy & hold beside it{RESET}",
-            f"  {INK}build buy BTC when RSI drops under 30, sell above 60{RESET}",
-            f"                       {DIM}writes a real strategy, checks it, runs it{RESET}",
-            f"  {INK}pf sma:AAPL, breakout:BTC-USD{RESET}  {DIM}a portfolio of both, rebalanced{RESET}",
-            f"  {INK}risk sma AAPL{RESET}        {DIM}drawdowns, VaR, beta, year by year{RESET}",
-            f"  {INK}screen rsi<35{RESET}        {DIM}scan your watchlist{RESET}",
-            f"  {INK}on jugnu{RESET}             {DIM}run the heavy work in the other account{RESET}",
-            f"  {INK}help{RESET}                 {DIM}everything else{RESET}",
-            "")
+        width = _width()
+        self.write("", f"{ui.GUTTER}{BOLD}{CLAY}Jugnu terminal{RESET}")
+        self.para("Paper trading and research. Nothing here can place a real order.",
+                  colour=FAINT)
+        self.write("")
+        examples = [
+            ("bt sma AAPL 2015", "backtest, with buy & hold beside it"),
+            ("pf sma:AAPL, breakout:BTC-USD", "a portfolio of both, rebalanced"),
+            ("risk sma AAPL", "drawdowns, VaR, beta, year by year"),
+            ("screen rsi<35", "scan your watchlist"),
+            ("build buy BTC when RSI < 30, sell above 60", "writes a real strategy and runs it"),
+            ("help", "everything else"),
+        ]
+        self.write(*self._command_list(examples, width))
+        self.write("")
+        self.para("New here? Type `tour` -- it runs one real backtest and explains every number "
+                  "in it.", colour=CLAY)
         if loaded:
-            self.write(f"{ui.GUTTER}{FAINT}your strategies: {', '.join(loaded)}{RESET}")
+            self.write("", f"{ui.GUTTER}{FAINT}your strategies: {', '.join(loaded)}{RESET}")
         if self.session.where == "jugnu":
             self.para("Heavy commands run in the Jugnu account, so sweeps don't slow this "
                       "session down and you never switch user. `on me` keeps them here.",
                       colour=FAINT)
         self.write("")
+
+    @staticmethod
+    def _command_list(rows: list[tuple[str, str]], width: int) -> list[str]:
+        """Command and description side by side when there's room, stacked
+        when there isn't. A 55-column window was truncating every line."""
+        longest = max(ui.width_of(left) for left, _ in rows)
+        widest = max(ui.width_of(right) for _, right in rows)
+        out = []
+        # Side by side only when the description fits whole: a truncated
+        # explanation is worse than one on its own line.
+        if longest + widest + 5 <= width:
+            for left, right in rows:
+                out.append(f"{ui.GUTTER}{INK}{ui.pad(left, longest + 3)}{RESET}{FAINT}{right}{RESET}")
+            return out
+        for left, right in rows:
+            out.append(f"{ui.GUTTER}{INK}{left}{RESET}")
+            out += ui.note(right, width, colour=FAINT, indent=ui.GUTTER + "  ")
+        return out
 
     # -- commands ----------------------------------------------------------
 
@@ -451,10 +490,10 @@ class Terminal:
                 ("source [install]", "where data comes from"),
             ]),
         ]
+        width = _width()
         for title, rows in groups:
             self.rule(title)
-            for left, right in rows:
-                self.write(f"  {INK}{left:<24}{RESET}{DIM}{right}{RESET}")
+            self.write(*self._command_list(rows, width))
         self.write("")
         self.para("·model marks the four commands that spend a model call. Everything else is "
                   "local arithmetic. Heavy commands become numbered jobs, so you can start several "
@@ -847,7 +886,17 @@ class Terminal:
 
     # -- the model ---------------------------------------------------------
 
+    def _needs_model(self) -> bool:
+        if model() is not None:
+            return False
+        self.para("That one needs Jugnu's model, which lives in your main account. Run this "
+                  "terminal there (⌘⇧T in Jugnu) -- everything else here works either way.",
+                  colour=AMBER)
+        return True
+
     def cmd_build(self, args: list[str]) -> None:
+        if self._needs_model():
+            return
         description = " ".join(args).strip()
         if not description:
             self.write(f"{DIM}describe it: `build buy BTC when RSI drops under 30, sell above 60`{RESET}")
@@ -876,6 +925,8 @@ class Terminal:
         self.job(f"build: {description[:28]}", work)
 
     def cmd_ask(self, args: list[str]) -> None:
+        if self._needs_model():
+            return
         question = " ".join(args).strip()
         result = self.session.last_result
         if result is None:
@@ -896,6 +947,8 @@ class Terminal:
                 self.write(f"  {INK}{name}{RESET}{DIM} — {text}{RESET}")
                 return
         result = self.session.last_result
+        if result is not None and self._needs_model():
+            return
         if result is None:
             self.rule("what the words mean")
             for name, meaning in explain.GLOSSARY.items():
@@ -910,6 +963,8 @@ class Terminal:
         self.background("thinking…", work)
 
     def cmd_why(self, args: list[str]) -> None:
+        if self._needs_model():
+            return
         symbol = (args[0] if args else self.session.symbol).upper()
         def work():
             import llm_client
@@ -1359,6 +1414,57 @@ class Terminal:
 
     # -- misc --------------------------------------------------------------
 
+    def cmd_tour(self, args: list[str]) -> None:
+        """Runs one real backtest and explains every number in it."""
+        symbol = (args[0] if args else "AAPL").upper()
+
+        def work(entry):
+            self.rule("what this thing is")
+            self.para("A simulator. It replays a strategy over real prices, pays real-looking "
+                      "costs, and tells you what would have happened -- next to what doing "
+                      "nothing would have done. Nothing here touches money.")
+            self.write("")
+            self.para(f"Running `bt sma {symbol} 2015` now: buy when the 20-day average crosses "
+                      f"above the 100-day, sell when it crosses back.", colour=INK)
+
+            bars = load(symbol, start="2015-01-01")
+            result = analysis.backtest(bars, "sma", symbol=symbol)
+            costs = analysis.cost_sensitivity(bars, "sma", symbol=symbol)
+            notes = metrics.warnings(result.metrics, result.benchmark_metrics, cost_curve=costs,
+                                     bars=len(bars), trades=result.metrics["trades"])
+            self.session.last_result = result
+            self._show_result(result, notes, costs)
+
+            self.rule("how to read that")
+            for label, text in [
+                ("strategy vs buy & hold",
+                 "The first pair of numbers. If the strategy is lower, the work lost to doing "
+                 "nothing -- which is the usual answer, and the reason this is the headline."),
+                ("max fall",
+                 "The worst peak-to-trough drop along the way. It's the number that decides "
+                 "whether you could actually have held on."),
+                ("sharpe",
+                 "Return per unit of wobble. Under 0.5 you're being paid badly for the stress."),
+                ("the slippage row",
+                 "The same run at higher trading costs. A strategy that only works at zero cost "
+                 "doesn't work."),
+                ("the warnings",
+                 "Printed above the chart on purpose. Most tools hide these."),
+            ]:
+                self.write(f"{ui.GUTTER}{INK}{label}{RESET}")
+                self.write(*ui.note(text, _width(), colour=DIM, indent=ui.GUTTER + "  "))
+            self.rule("try these next")
+            self.write(*self._command_list([
+                ("explain", "the same result, in plain words"),
+                ("risk sma " + symbol, "drawdowns, the year-by-year table, trade stats"),
+                ("sweep sma " + symbol, "every setting, to see if this one was luck"),
+                ("wf sma " + symbol, "tune on old data, trade the next stretch blind"),
+                ("vs sma rsi breakout " + symbol, "three strategies side by side"),
+                ("paper start sma " + symbol, "run it forward on live prices, on paper"),
+                ("help", "everything else"),
+            ], _width()))
+        self.job(f"tour {symbol}", work)
+
     def cmd_clear(self, args: list[str]) -> None:
         with self.lock:
             self.session.lines.clear()
@@ -1372,8 +1478,25 @@ class Terminal:
 # Charts
 # ---------------------------------------------------------------------------
 
+def model() -> object | None:
+    """Jugnu's model client, when this account has it.
+
+    The Jugnu account only receives the `trading` package -- llm_client and
+    the rest of the backend live in your home folder, which that account
+    can't read. So a terminal running there does every bit of analysis and
+    simply has no model: `ask`, `why`, `explain` and `build` say so instead
+    of crashing on the import, which is what they used to do.
+    """
+    try:
+        import llm_client
+        return llm_client
+    except ImportError:
+        return None
+
+
 def _width() -> int:
-    return max(72, shutil.get_terminal_size((100, 30)).columns)
+    """The usable width: the real one, minus the last cell (see draw)."""
+    return max(30, shutil.get_terminal_size((100, 30)).columns - 1)
 
 
 def _plot(series: list[tuple[list[float], str, str]], height: int, width: int,
@@ -1459,6 +1582,7 @@ COMMANDS = {
     "on": Terminal.cmd_where, "where": Terminal.cmd_where,
     "jobs": Terminal.cmd_jobs, "job": Terminal.cmd_job, "y": Terminal.cmd_years,
     "alert": Terminal.cmd_alert, "unalert": Terminal.cmd_unalert,
+    "tour": Terminal.cmd_tour, "start": Terminal.cmd_tour, "learn": Terminal.cmd_tour,
     "clear": Terminal.cmd_clear,
     "quit": Terminal.cmd_quit, "exit": Terminal.cmd_quit,
 }
@@ -1468,8 +1592,8 @@ def _pick_model_mode() -> None:
     """Run from a plain shell, the terminal has no API key in its
     environment. If Claude Code is installed and logged in, use the plan --
     it costs nothing per call and needs no configuration."""
-    import llm_client
-    if os.environ.get("JUGNU_MODEL_MODE"):
+    llm_client = model()
+    if llm_client is None or os.environ.get("JUGNU_MODEL_MODE"):
         return
     if any(os.environ.get(name) for name in ("JUGNU_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY")):
         return

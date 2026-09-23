@@ -314,6 +314,11 @@ final class WindowManager: NSObject, NSWindowDelegate {
         let source = "tell application \"Terminal\"\n"
             + "  activate\n"
             + "  do script \"clear && '\(script)'\"\n"
+            + "  delay 0.3\n"
+            + "  try\n"
+            + "    set number of columns of front window to 108\n"
+            + "    set number of rows of front window to 34\n"
+            + "  end try\n"
             + "end tell"
         DispatchQueue.global(qos: .userInitiated).async {
             let process = Process()

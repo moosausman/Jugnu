@@ -16,10 +16,16 @@ Rules:
 """
 from __future__ import annotations
 
+import math
 import re
 import textwrap
 
-RESET = "\x1b[0m"
+# Foreground and intensity only -- NOT \x1b[0m. A full reset also clears
+# the background, so every coloured word punched a hole in the screen and
+# the window's own profile (someone's red "Novel" theme) showed through.
+RESET = "\x1b[22;39m"
+FULL_RESET = "\x1b[0m"
+BG_RESET = "\x1b[49m"
 BOLD = "\x1b[1m"
 INK = "\x1b[38;5;253m"
 DIM = "\x1b[38;5;247m"
@@ -29,6 +35,11 @@ GREEN = "\x1b[38;5;114m"
 RED = "\x1b[38;5;203m"
 AMBER = "\x1b[38;5;179m"
 BAR = "\x1b[48;5;236m"
+# The terminal paints its own background on every row, so it looks the same
+# whatever profile the window happens to use -- Jugnu's dark ink rather
+# than someone's red "Novel" theme.
+BG = "\x1b[48;5;234m"
+BG_BAR = "\x1b[48;5;237m"
 
 GUTTER = "  "
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -107,12 +118,12 @@ def tint(value: float, text: str) -> str:
 # ---------------------------------------------------------------------------
 
 def rule(label: str = "", width: int = 80, colour: str = CLAY) -> str:
-    """A section divider. The label sits in the line, not above it, so a
-    screenful of results still reads as a list of sections."""
+    """A section header: a coloured bar, the title, and a hairline to the
+    edge. Reads as a heading at a glance, which a row of dashes doesn't."""
     if not label:
         return FAINT + "─" * width + RESET
-    head = f"{FAINT}──{RESET} {colour}{label}{RESET} "
-    tail = max(0, width - width_of(head))
+    head = f"{colour}▌{RESET}{BOLD}{INK} {label} {RESET}"
+    tail = max(0, width - width_of(head) - 1)
     return head + FAINT + "─" * tail + RESET
 
 
@@ -144,7 +155,11 @@ def stats(pairs: list[tuple[str, str]], width: int, per_row: int | None = None) 
         return []
     cell = max(max(width_of(label) for label, _ in pairs),
                max(width_of(value) for _, value in pairs)) + 3
-    columns = per_row or max(1, min(len(pairs), (width - len(GUTTER)) // cell))
+    fits = max(1, min(len(pairs), (width - len(GUTTER)) // cell))
+    # Balance the rows: eight figures in a window that fits seven should be
+    # 4 and 4, not 7 and a lonely one.
+    rows_needed = math.ceil(len(pairs) / fits)
+    columns = per_row or max(1, math.ceil(len(pairs) / rows_needed))
     rows: list[str] = []
     for start in range(0, len(pairs), columns):
         chunk = pairs[start:start + columns]

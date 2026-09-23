@@ -241,6 +241,50 @@ def paper_trade(action: str = "status", symbol: str = "", strategy: str = "sma",
         return _fail(str(e))
 
 
+def open_trading_terminal(count: int = 1, session: str = "") -> dict:
+    """Open the Jugnu trading terminal in Terminal windows.
+
+    The terminal is where backtests, portfolios, paper accounts and the
+    market screen live. Opening several lets you run separate experiments
+    side by side.
+
+    Args:
+        count: How many terminal windows to open (1-8).
+        session: "jugnu" opens them on the Jugnu account's desktop (watch
+            them with Jugnu's Desk), "me" opens them here. Default: here.
+    """
+    import subprocess
+    from pathlib import Path
+
+    from trading import remote
+
+    count = max(1, min(8, int(count or 1)))
+    where = (session or "").strip().lower()
+    if where in ("jugnu", "agent", "other", "second"):
+        try:
+            opened = remote.open_terminals(count)
+        except remote.RemoteError as e:
+            return _fail(str(e))
+        return {"ok": True, "opened": opened, "where": "the Jugnu account",
+                "note": "Watch them on Jugnu's Desk (⌘⇧D)."}
+
+    script = Path(__file__).resolve().parent.parent / "jugnu"
+    if not script.exists():
+        return _fail(f"The terminal launcher isn't where I expected ({script}).")
+    for _ in range(count):
+        source = ('tell application "Terminal"\n  activate\n'
+                  f'  do script "clear && \'{script}\'"\n'
+                  '  delay 0.3\n  try\n'
+                  '    set number of columns of front window to 108\n'
+                  '    set number of rows of front window to 34\n'
+                  '  end try\nend tell')
+        result = subprocess.run(["osascript", "-e", source], capture_output=True, text=True,
+                                timeout=45)
+        if result.returncode != 0:
+            return _fail((result.stderr or "couldn't open Terminal").strip()[:200])
+    return {"ok": True, "opened": count, "where": "this account"}
+
+
 def past_backtests(limit: int = 10) -> dict:
     """List backtests run earlier, newest first, with what each one found.
 

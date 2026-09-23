@@ -124,6 +124,15 @@ Commands: `q` `ch` `wl` `mkt` `screen` `corr` `alert` (prices and scanning),
 (what's running, and where), `fa` `opt` `source` (OpenBB), and four that
 spend a model call and say so: `build` `ask` `why` `explain`.
 
+**It paints its own page.** Rows are written with an explicit background
+and `\x1b[22;39m` between colours -- never `\x1b[0m`, which also clears the
+background and let the window's own profile (a red theme, in practice)
+show through every coloured word. Output ends each row with `\x1b[K` and
+joins rows with `\r\n`: the terminal is in raw mode, where a bare `\n`
+moves down without returning to column 0, which turned the screen into a
+staircase of fragments. The frame is one column narrower than the window,
+because writing into the last cell makes terminals wrap.
+
 **It fits the window.** `ui.py` holds the terminal's typography: every
 panel is built from `rule`, `stats`, `table`, `note`, `chart`, `bar`, and
 each takes the window width and respects it. Tables shed their least
@@ -132,6 +141,14 @@ charts size to the pane, and the market panel collapses to a one-line
 ticker below 96 columns or 28 rows. A test asserts no panel ever draws a
 line wider than the window, because the first version hardcoded column
 positions and turned into confetti at 80 columns.
+
+**Opening it.** ⌘⇧T, or ask Jugnu ("open 4 trading terminals", optionally
+"on the Jugnu account") -- `open_trading_terminal` in the system agent
+opens them at 108x34 through Terminal.app. In the Jugnu account the
+launcher lives at /Users/Shared/jugnu-trading/jugnu and runs on the system
+Python; a terminal there has no model (llm_client isn't readable from that
+account), so `ask`, `why`, `explain` and `build` say so and everything else
+works. `tour` runs one real backtest and explains every figure in it.
 
 **Heavy work defaults to the Jugnu account.** When that session is up, the
 terminal points there on start: sweeps don't compete with the session

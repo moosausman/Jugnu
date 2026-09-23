@@ -98,8 +98,54 @@ def install(force: bool = False) -> Path:
                 os.chmod(path, 0o777 if path.name == "data" else 0o755)
             except PermissionError:
                 pass
+        # A launcher the Jugnu account can run: its own Python, its own
+        # data directory, inside a folder it's allowed to read.
+        launcher = SHARED / "jugnu"
+        launcher.write_text("#!/bin/bash\n"
+                            f"cd {SHARED} || exit 1\n"
+                            f"export JUGNU_DATA_DIR={SHARED}/data\n"
+                            "exec /usr/bin/python3 -m trading \"${@:-term}\"\n")
+        os.chmod(launcher, 0o755)
         stamp.write_text(str(time.time()))
     return SHARED
+
+
+def launcher_path() -> str:
+    install()
+    return str(SHARED / "jugnu")
+
+
+def open_terminals(count: int = 1) -> int:
+    """Opens the trading terminal in the Jugnu account, as real Terminal
+    windows on that desktop -- watch them on Jugnu's Desk (⌘⇧D)."""
+    script = launcher_path()
+    opened = 0
+    for _ in range(max(1, min(8, count))):
+        source = ('tell application "Terminal"\n'
+                  '  activate\n'
+                  f'  do script "clear && \'{script}\'"\n'
+                  '  delay 0.3\n'
+                  '  try\n'
+                  '    set number of columns of front window to 108\n'
+                  '    set number of rows of front window to 34\n'
+                  '  end try\n'
+                  'end tell')
+        command = "osascript -e " + json.dumps(source).replace("'", "'\\''")
+        try:
+            reply = post_json(f"http://127.0.0.1:{AGENT_PORT}/shell/run",
+                              {"args": {"command": f"osascript -e {_quote(source)}", "timeout": 30}},
+                              timeout=45)
+        except HttpError as e:
+            raise RemoteError(f"The Jugnu account isn't answering ({e}).") from e
+        if reply.get("ok") is False:
+            raise RemoteError(str(reply.get("error") or "couldn't open a window there"))
+        opened += 1
+        time.sleep(0.4)          # Terminal drops windows asked for too fast
+    return opened
+
+
+def _quote(text: str) -> str:
+    return "'" + text.replace("'", "'\\''") + "'"
 
 
 def run(payload: dict, *, timeout: float = 900.0, python: str = "/usr/bin/python3") -> dict:
