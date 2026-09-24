@@ -253,9 +253,190 @@ def paper_trade(action: str = "status", symbol: str = "", strategy: str = "sma",
         return _fail(str(e))
 
 
+def stress_test_strategy(symbol: str, strategy: str = "sma", start: str = "",
+                         checks: str = "all") -> dict:
+    """Find out whether a backtest is evidence or a coincidence.
+
+    A good backtest means almost nothing on its own. This runs the checks a
+    quant desk would run before believing one, and each can fail it:
+
+        real      probabilistic Sharpe, a block-bootstrap confidence
+                  interval, and the track record length the Sharpe would
+                  need to clear zero
+        overfit   probability of backtest overfitting -- how often picking
+                  the best parameters in-sample picks a below-median
+                  performer out-of-sample. Above 0.5 is worse than a coin
+        deflated  the Sharpe after charging for every parameter set tried
+                  to find it, against what pure luck would have produced
+        factor    alpha against market, size, value and momentum exposures,
+                  with Newey-West t-statistics. Most "edges" are beta
+        capacity  the fund size at which square-root market impact eats the
+                  whole return
+
+    Use it whenever the user asks whether a strategy is any good, is real,
+    would work with real money, or would survive scrutiny -- and before
+    ever describing a backtest as promising.
+
+    Args:
+        symbol: Ticker, e.g. "AAPL" or "BTC-USD".
+        strategy: Strategy name; `list_strategies` has them.
+        start: Optional start date, e.g. "2015-01-01".
+        checks: "all", or a comma-separated subset of
+            real, overfit, deflated, factor, capacity.
+    """
+    from trading import allocate, capacity as cap, factors, quant  # noqa: F401
+    from trading.data import periods_per_year
+
+    symbol = (symbol or "").upper().strip()
+    wanted = ({"real", "overfit", "deflated", "factor", "capacity"}
+              if checks.strip().lower() in ("", "all")
+              else {c.strip().lower() for c in checks.split(",")})
+    try:
+        bars = load(symbol, "1d", start=start or None)
+        result = analysis.backtest(bars, strategy, symbol=symbol)
+    except (DataError, ValueError, KeyError) as e:
+        return _fail(str(e))
+
+    equity = result.equity
+    rets = [equity[i] / equity[i - 1] - 1.0 if equity[i - 1] > 0 else 0.0
+            for i in range(1, len(equity))]
+    per_year = periods_per_year(symbol, "1d")
+    moments = quant.moments(rets)
+    sr = moments["mean"] / moments["sd"] if moments["sd"] > 0 else 0.0
+    out = {"ok": True, "symbol": symbol, "strategy": strategy,
+           "sharpe_annual": round(quant.annualise(sr, per_year), 3),
+           "return": round(result.metrics["total_return"], 4),
+           "benchmark_return": round(result.benchmark_metrics["total_return"], 4),
+           "bars": moments["n"], "verdict": []}
+
+    if "real" in wanted:
+        boot = quant.bootstrap_sharpe(rets, runs=400)
+        out["real"] = {
+            "p_sharpe_above_zero": round(quant.probabilistic_sharpe(
+                sr, moments["n"], moments["skew"], moments["kurtosis"]), 3),
+            "skew": round(moments["skew"], 2), "kurtosis": round(moments["kurtosis"], 1),
+            "sharpe_ci": [round(quant.annualise(boot["low"], per_year), 2),
+                          round(quant.annualise(boot["high"], per_year), 2)] if boot["enough"] else None,
+        }
+        if boot.get("enough") and boot["low"] <= 0:
+            out["verdict"].append("The bootstrap interval for the Sharpe includes zero.")
+
+    if wanted & {"overfit", "deflated"}:
+        try:
+            grid = analysis.sweep_returns(bars, strategy, symbol=symbol)
+        except ValueError as e:
+            grid = None
+            out["sweep_error"] = str(e)
+        if grid:
+            if "overfit" in wanted:
+                pbo = quant.cscv_pbo(grid["matrix"], splits=10)
+                if pbo.get("enough"):
+                    out["overfit"] = {"pbo": round(pbo["pbo"], 3),
+                                      "configurations": pbo["configurations"]}
+                    if pbo["pbo"] > 0.5:
+                        out["verdict"].append(
+                            f"PBO {pbo['pbo']:.0%}: tuning this on past data selects parameters "
+                            "that then underperform.")
+            if "deflated" in wanted:
+                sharpes = [quant.sharpe([row[c] for row in grid["matrix"]])
+                           for c in range(grid["configurations"])]
+                spread = quant.moments(sharpes)
+                report = quant.deflated_sharpe(max(sharpes), moments["n"], moments["skew"],
+                                               moments["kurtosis"], grid["configurations"],
+                                               spread["sd"] ** 2)
+                out["deflated"] = {"p_real": round(report["deflated"], 3),
+                                   "trials": report["trials"],
+                                   "luck_hurdle_annual": round(
+                                       quant.annualise(report["hurdle"], per_year), 2)}
+                if report["deflated"] < 0.5:
+                    out["verdict"].append(
+                        "The best parameter set does not beat what luck would produce from "
+                        f"{report['trials']} tries.")
+
+    if "factor" in wanted:
+        attribution = factors.attribute(result.dates[1:], rets, start=start or None)
+        if attribution.get("ok"):
+            out["factor"] = {
+                "alpha_annual": round(attribution["alpha_annual"], 4),
+                "alpha_t": round(attribution["alpha_t"], 2),
+                "alpha_p": round(attribution["alpha_p"], 3),
+                "r2": round(attribution["r2"], 3),
+                "loadings": {k: round(v["coefficient"], 3)
+                             for k, v in attribution["loadings"].items()},
+            }
+            if attribution["alpha_p"] >= 0.05:
+                out["verdict"].append(
+                    f"Alpha is not distinguishable from zero (t={attribution['alpha_t']:.2f}); "
+                    "the returns are the factor exposures.")
+        else:
+            out["factor"] = {"error": attribution.get("error")}
+
+    if "capacity" in wanted:
+        curve = cap.curve(result, bars, result.metrics["cagr"])
+        if curve.get("ok"):
+            solved = curve["solved_capacity"]
+            out["capacity"] = {
+                "usd": None if solved == float("inf") else round(solved),
+                "dollar_adv": round(curve["dollar_adv"]),
+            }
+            if solved != float("inf") and solved < 1e6:
+                out["verdict"].append(
+                    f"Market impact eats the edge above about ${solved:,.0f}.")
+
+    if not out["verdict"]:
+        out["verdict"].append("Nothing here disqualifies it, which is rarer than it sounds.")
+    return out
+
+
+def compare_allocations(symbols: list, start: str = "") -> dict:
+    """Weight a basket three ways and report what each does to portfolio risk.
+
+    Equal weight, inverse variance (risk parity's simple form), and
+    hierarchical risk parity, which clusters correlated names so three
+    versions of the same trade share one slot instead of taking three.
+    None of them needs expected returns or a matrix inverse, which is why
+    they survive out of sample where mean-variance optimisation does not.
+
+    Args:
+        symbols: Tickers, e.g. ["SPY", "QQQ", "TLT", "GLD"]. Two to twelve.
+        start: Optional start date.
+    """
+    from trading import allocate
+
+    if isinstance(symbols, str):
+        symbols = [s for s in symbols.replace(",", " ").split() if s]
+    tickers = [str(s).upper().strip() for s in (symbols or [])][:12]
+    if len(tickers) < 2:
+        return _fail("Give me at least two symbols.")
+    series, failed = {}, {}
+    for ticker in tickers:
+        try:
+            closes = [b.close for b in load(ticker, "1d", start=start or None)]
+            series[ticker] = [closes[i] / closes[i - 1] - 1.0
+                              for i in range(1, len(closes)) if closes[i - 1] > 0]
+        except (DataError, ValueError) as e:
+            failed[ticker] = str(e)[:80]
+    if len(series) < 2:
+        return _fail("Couldn't load enough of those: " + "; ".join(f"{k} ({v})" for k, v in failed.items()))
+    report = allocate.summarise(list(series), series)
+    if not report.get("ok"):
+        return _fail(report.get("error", "couldn't build the covariance"))
+    schemes = {label: {"weights": {k: round(v, 4) for k, v in info["weights"].items()},
+                       "annual_volatility": round(info["annual_vol"], 4)}
+               for label, info in report["schemes"].items()}
+    calmest = min(schemes, key=lambda k: schemes[k]["annual_volatility"])
+    return {"ok": True, "symbols": report["names"], "schemes": schemes,
+            "lowest_risk": calmest, "skipped": failed or None}
+
+
 def open_trading_terminal(count: int = 1, session: str = "", commands: list = None) -> dict:
-    """Open the Jugnu trading terminal in Terminal windows -- several at
-    once, tiled, each already running whatever you tell it to.
+    """Open the JUGNU TRADING TERMINAL -- the market simulator -- in Terminal
+    windows, several at once, tiled, each already running what you tell it to.
+
+    This is NOT the macOS Terminal app. "Open a terminal", "open Terminal",
+    "give me a shell" mean that plain app: use open_app for those, and do
+    not call this as well. Call this only when they ask for the TRADING
+    terminal or the simulator, or to run one of the commands below.
 
     This is the main way to put work on screen. "Open 4 terminals and
     backtest a different stock in each" is one call: count=4 with four
@@ -272,6 +453,13 @@ def open_trading_terminal(count: int = 1, session: str = "", commands: list = No
         sweep rsi SPY             every parameter combination, as a heatmap
         wf sma QQQ 5              walk forward: tune, then trade blind
         mc sma AAPL               Monte Carlo: the same trades, reshuffled
+        stats sma AAPL            is the Sharpe real? bootstrap CI, track record
+        pbo sma AAPL              probability the sweep overfitted
+        dsr sma AAPL              Sharpe after paying for the search
+        cv sma AAPL               purged, embargoed cross-validation
+        factor sma AAPL           alpha vs market/size/value/momentum
+        cap sma AAPL              fund size before impact eats the edge
+        alloc SPY QQQ TLT GLD     equal vs inverse-variance vs HRP
         costs sma AAPL            what slippage does to it
         pf sma:AAPL, rsi:SPY      a portfolio of sleeves, rebalanced
         screen rsi<35 vol>2       scan the watchlist

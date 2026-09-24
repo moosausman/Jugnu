@@ -47,6 +47,22 @@ class FastPathParseTests(unittest.TestCase):
         intent = fastpath.parse(text)
         return (intent.tool, intent.args) if intent else None
 
+    def test_a_plain_terminal_is_the_app_not_the_simulator(self):
+        """"open a terminal on jugnu" used to miss the fastpath entirely and
+        reach an agent holding both open_app and open_trading_terminal,
+        which fired both -- a Terminal window AND a trading window."""
+        import router
+        for text in ("open a terminal on jugnu", "open terminal in jugnu.",
+                     "open a terminal on jugnu!"):
+            self.assertEqual(self.parsed(text), ("open_app", {"app_name": "Terminal"}), text)
+            self.assertEqual(router.session_hint(text), "agent", text)
+
+    def test_the_vocative_is_still_stripped(self):
+        # "open safari, jugnu" is being spoken TO Jugnu, not about its account.
+        import router
+        self.assertEqual(self.parsed("open safari, jugnu"), ("open_app", {"app_name": "Safari"}))
+        self.assertIsNone(router.session_hint("open safari, jugnu"))
+
     def test_a_loudness_clause_is_not_part_of_the_artist(self):
         """"play pablo by hania amir on spotify at max volume" searched
         Spotify for an artist called "hania amir on spotify at max volume"

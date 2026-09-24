@@ -65,6 +65,36 @@ def grid(ranges: dict) -> list[dict]:
     return [dict(zip(names, combo)) for combo in itertools.product(*values)]
 
 
+def sweep_returns(bars: list[Bar], strategy: str, ranges: dict | None = None, *,
+                  symbol: str = "", interval: str = "1d", cash: float = 10_000.0,
+                  commission: float = 1.0, slippage_bps: float = 5.0,
+                  limit: int = 200) -> dict:
+    """Every configuration's per-bar return series, not just its summary.
+
+    sweep() keeps one number per configuration and throws the curves away.
+    The overfitting tests need the curves: they re-rank configurations over
+    subsets of the timeline, which a summary cannot support.
+    """
+    spec = get(strategy)
+    combos = grid(ranges or spec.ranges)
+    if not combos:
+        raise ValueError(f"{strategy} has no parameters to sweep.")
+    if len(combos) > limit:
+        raise ValueError(f"That grid is {len(combos)} runs; narrow it (limit {limit}).")
+    labels, curves = [], []
+    for params in combos:
+        result = backtest(bars, strategy, params, symbol=symbol, interval=interval, cash=cash,
+                          commission=commission, slippage_bps=slippage_bps)
+        equity = result.equity
+        curves.append([equity[i] / equity[i - 1] - 1.0 if equity[i - 1] > 0 else 0.0
+                       for i in range(1, len(equity))])
+        labels.append(", ".join(f"{k}={v}" for k, v in sorted(params.items())))
+    width = min(len(c) for c in curves) if curves else 0
+    matrix = [[curves[c][t] for c in range(len(curves))] for t in range(width)]
+    return {"labels": labels, "matrix": matrix, "periods": width,
+            "configurations": len(labels), "strategy": strategy, "symbol": symbol}
+
+
 def sweep(bars: list[Bar], strategy: str, ranges: dict | None = None, *, symbol: str = "",
           interval: str = "1d", cash: float = 10_000.0, commission: float = 1.0,
           slippage_bps: float = 5.0, limit: int = 400) -> dict:

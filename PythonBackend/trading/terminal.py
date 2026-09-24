@@ -20,6 +20,7 @@ before they run. Everything else is local arithmetic and takes milliseconds.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import select
@@ -32,8 +33,8 @@ import tty
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from . import (alerts, analysis, authoring, explain, jobs, metrics, paper, portfolio, quotes,
-               remote, render, risk, screen, signals, sources, store, strategies, ui)
+from . import (alerts, analysis, authoring, data, explain, jobs, metrics, paper, portfolio,
+               quotes, remote, render, risk, screen, signals, sources, store, strategies, ui)
 from .data import DataError, load
 from .ui import GUTTER, fit, money, percent, visible_width as visible
 
@@ -44,6 +45,12 @@ from .ui import GUTTER, fit, money, percent, visible_width as visible
 RESET, BOLD = ui.RESET, ui.BOLD
 DIM, FAINT, INK = ui.DIM, ui.FAINT, ui.INK
 CLAY, GREEN, RED, AMBER, BAR = ui.CLAY, ui.GREEN, ui.RED, ui.AMBER, ui.BAR
+
+
+def _odds(probability: float) -> str:
+    """A probability, coloured by whether it is the kind you'd act on."""
+    colour = GREEN if probability >= 0.95 else (AMBER if probability >= 0.5 else RED)
+    return f"{colour}{probability * 100:.0f}%{RESET}"
 
 
 def pct(value: float, width: int = 0, colour: bool = True) -> str:
@@ -533,6 +540,15 @@ class Terminal:
                 ("trades · runs · y", "the trade list, saved runs, the year table"),
                 ("g", "show or hide the chart pane"),
             ]),
+            ("is it real", [
+                ("stats STRAT SYM", "probabilistic Sharpe, bootstrap CI, track record"),
+                ("pbo STRAT SYM", "probability the sweep overfitted"),
+                ("dsr STRAT SYM", "Sharpe after paying for the search"),
+                ("cv STRAT SYM", "purged, embargoed cross-validation"),
+                ("factor STRAT SYM", "alpha vs market, size, value, momentum"),
+                ("cap STRAT SYM", "how much money before impact eats it"),
+                ("alloc SYM SYM…", "equal vs inverse-variance vs HRP"),
+            ]),
             ("paper", [
                 ("paper start STRAT SYM", "a simulated account on live prices"),
                 ("paper [step|stop ID]", "update, or close one"),
@@ -884,6 +900,280 @@ class Terminal:
             self.para("Every trade pays the spread. A strategy that only works at zero cost "
                       "doesn't work.")
         self.job(f"costs {strategy} {symbol}", work)
+
+    # -- the statistics of not fooling yourself ----------------------------
+
+    def _daily_returns(self, result) -> list[float]:
+        equity = result.equity
+        return [equity[i] / equity[i - 1] - 1.0 if equity[i - 1] > 0 else 0.0
+                for i in range(1, len(equity))]
+
+    def cmd_stats(self, args: list[str]) -> None:
+        """`stats` -- is this Sharpe real, before worrying about the search."""
+        strategy, symbol, start, params = self._parse_run(args)
+
+        def work(entry):
+            from . import quant
+            bars = load(symbol, start=start or None)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol)
+            self.session.last_result = result
+            rets = self._daily_returns(result)
+            m = quant.moments(rets)
+            per_year = data.periods_per_year(symbol, "1d")
+            sr = m["mean"] / m["sd"] if m["sd"] > 0 else 0.0
+            psr = quant.probabilistic_sharpe(sr, m["n"], m["skew"], m["kurtosis"])
+            need = quant.min_track_record(sr, m["n"], m["skew"], m["kurtosis"])
+            boot = quant.bootstrap_sharpe(rets, runs=600)
+            self.rule(f"{symbol}  {strategy}  is it real?")
+            self.stats([
+                ("sharpe/yr", f"{INK}{quant.annualise(sr, per_year):.2f}{RESET}"),
+                ("P(Sharpe>0)", _odds(psr)),
+                ("skew", f"{INK}{m['skew']:+.2f}{RESET}"),
+                ("kurtosis", f"{INK}{m['kurtosis']:.1f}{RESET}"),
+                ("bars", f"{INK}{m['n']:,}{RESET}"),
+            ])
+            if boot.get("enough"):
+                low = quant.annualise(boot["low"], per_year)
+                high = quant.annualise(boot["high"], per_year)
+                self.write("")
+                self.write(f"{ui.GUTTER}{DIM}95% interval{RESET}  "
+                           f"{INK}{low:+.2f}{RESET} {FAINT}..{RESET} {INK}{high:+.2f}{RESET}"
+                           f"{DIM}  Sharpe/yr, block bootstrap{RESET}")
+                self.para(f"{boot['p_negative'] * 100:.0f}% of the resampled histories had no edge at all. "
+                          "Blocks, not single days, so the autocorrelation survives the resampling.")
+            if math.isinf(need):
+                self.para("The Sharpe is at or below zero, so no amount of further data would make it "
+                          "significant.", colour=RED)
+            elif need > m["n"]:
+                self.para(f"You would need about {need:,.0f} bars for this to clear zero at 95% "
+                          f"confidence, and you have {m['n']:,}. Not yet evidence.", colour=AMBER)
+            else:
+                self.para(f"{need:,.0f} bars would have been enough for 95% confidence; you have "
+                          f"{m['n']:,}. The length of the record is not the weak point.")
+            self.para("This says nothing about how many strategies you tried to find it. "
+                      "`pbo` and `dsr` charge you for that.", colour=FAINT)
+        self.job(f"stats {strategy} {symbol}", work)
+
+    def cmd_pbo(self, args: list[str]) -> None:
+        """`pbo` -- how often picking the in-sample winner picks a loser."""
+        strategy, symbol, start, _ = self._parse_run(args)
+
+        def work(entry):
+            from . import quant
+            bars = load(symbol, start=start or None)
+            grid = analysis.sweep_returns(bars, strategy, symbol=symbol)
+            report = quant.cscv_pbo(grid["matrix"], splits=10)
+            self.rule(f"{symbol}  {strategy}  overfitting")
+            if not report.get("enough"):
+                self.write(f"{ui.GUTTER}{DIM}{report.get('reason', 'not enough data')}{RESET}")
+                return
+            pbo = report["pbo"]
+            colour = RED if pbo > 0.5 else (AMBER if pbo > 0.35 else GREEN)
+            self.stats([
+                ("PBO", f"{colour}{pbo * 100:.0f}%{RESET}"),
+                ("configs", f"{INK}{report['configurations']}{RESET}"),
+                ("splits tried", f"{INK}{report['combinations']}{RESET}"),
+                ("median logit", f"{INK}{report['median_logit']:+.2f}{RESET}"),
+            ])
+            self.write("")
+            self.para("Cut the history into ten blocks, take every way of using half of them to pick "
+                      "a winner, then rank that winner over the other half. PBO is how often it "
+                      "lands in the bottom half.")
+            if pbo > 0.5:
+                self.para(f"At {pbo * 100:.0f}% you are worse than a coin: tuning this strategy on past "
+                          "data actively selects parameters that then underperform. The grid is noise.",
+                          colour=RED)
+            elif pbo > 0.35:
+                self.para(f"{pbo * 100:.0f}% is high. Selection carries some signal, but most of what "
+                          "the sweep found will not survive.", colour=AMBER)
+            else:
+                self.para(f"{pbo * 100:.0f}% is respectable -- the in-sample winner usually stays a "
+                          "winner. Check `cap` next: surviving selection is not the same as being "
+                          "tradeable at size.", colour=GREEN)
+        self.job(f"pbo {strategy} {symbol}", work)
+
+    def cmd_dsr(self, args: list[str]) -> None:
+        """`dsr` -- the Sharpe after paying for the search that found it."""
+        strategy, symbol, start, params = self._parse_run(args)
+
+        def work(entry):
+            from . import quant
+            bars = load(symbol, start=start or None)
+            grid = analysis.sweep_returns(bars, strategy, symbol=symbol)
+            trials = grid["configurations"]
+            sharpes = [quant.sharpe([row[c] for row in grid["matrix"]]) for c in range(trials)]
+            spread = quant.moments(sharpes)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol)
+            self.session.last_result = result
+            rets = self._daily_returns(result)
+            m = quant.moments(rets)
+            sr = m["mean"] / m["sd"] if m["sd"] > 0 else 0.0
+            best = max(sharpes)
+            per_year = data.periods_per_year(symbol, "1d")
+            report = quant.deflated_sharpe(best, m["n"], m["skew"], m["kurtosis"],
+                                           trials, spread["sd"] ** 2)
+            self.rule(f"{symbol}  {strategy}  deflated sharpe")
+            self.stats([
+                ("best found", f"{INK}{quant.annualise(best, per_year):.2f}{RESET}"),
+                ("luck's best", f"{INK}{quant.annualise(report['hurdle'], per_year):.2f}{RESET}"),
+                ("trials", f"{INK}{trials}{RESET}"),
+                ("P(real)", _odds(report["deflated"])),
+            ])
+            self.write("")
+            self.para(f"Across {trials} parameter sets the Sharpes varied by {spread['sd']:.4f} per bar. "
+                      f"{trials} worthless strategies with that much spread would produce a best of "
+                      f"{quant.annualise(report['hurdle'], per_year):.2f} by luck alone. That is the bar, "
+                      "and it is why a sweep's winner is not the same evidence as a single run's.")
+            if report["deflated"] < 0.5:
+                self.para("The best configuration does not clear it. On this evidence the sweep found "
+                          "noise.", colour=RED)
+            elif report["deflated"] < 0.95:
+                self.para("It clears the bar, but not comfortably. Treat it as a hypothesis.", colour=AMBER)
+            else:
+                self.para("It clears the bar. Rare -- check `pbo` and `cap` before believing it.",
+                          colour=GREEN)
+            self.para(f"Your own run scored {quant.annualise(sr, per_year):.2f}.", colour=FAINT)
+        self.job(f"dsr {strategy} {symbol}", work)
+
+    def cmd_factor(self, args: list[str]) -> None:
+        """`factor` -- how much of the return is just exposure."""
+        strategy, symbol, start, params = self._parse_run(args)
+
+        def work(entry):
+            from . import factors
+            bars = load(symbol, start=start or None)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol)
+            self.session.last_result = result
+            rets = self._daily_returns(result)
+            report = factors.attribute(result.dates[1:], rets, start=start or None)
+            self.rule(f"{symbol}  {strategy}  factor attribution")
+            if not report.get("ok"):
+                self.write(f"{ui.GUTTER}{RED}{report.get('error')}{RESET}")
+                return
+            self.stats([
+                ("alpha/yr", ui.percent(report["alpha_annual"] * 100)),
+                ("t", f"{INK}{report['alpha_t']:+.2f}{RESET}"),
+                ("p", f"{INK}{report['alpha_p']:.3f}{RESET}"),
+                ("R²", f"{INK}{report['r2'] * 100:.0f}%{RESET}"),
+                ("days", f"{INK}{report['days']:,}{RESET}"),
+            ])
+            self.write("")
+            rows = []
+            for name, term in report["loadings"].items():
+                mark = f"{GREEN}yes{RESET}" if term["p"] < 0.05 else f"{FAINT}no{RESET}"
+                rows.append([name, f"{term['coefficient']:+.3f}", f"{term['t']:+.2f}",
+                             f"{term['p']:.3f}", mark])
+            self.table(["factor", "loading", "t", "p", "real?"], rows, aligns="<>>>>")
+            self.write("")
+            for line in factors.verdict(report):
+                self.para(line)
+            self.para("Factors are ETF spreads (SPY, IWM−SPY, VTV−VUG, MTUM−SPY), not the "
+                      "Fama-French research series -- tradeable, but shorter and noisier.", colour=FAINT)
+        self.job(f"factor {strategy} {symbol}", work)
+
+    def cmd_capacity(self, args: list[str]) -> None:
+        """`cap` -- how much money this could hold before it stops working."""
+        strategy, symbol, start, params = self._parse_run(args)
+
+        def work(entry):
+            from . import capacity
+            bars = load(symbol, start=start or None)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol)
+            self.session.last_result = result
+            report = capacity.curve(result, bars, result.metrics["cagr"])
+            self.rule(f"{symbol}  {strategy}  capacity")
+            if not report.get("ok"):
+                self.write(f"{ui.GUTTER}{RED}{report.get('error')}{RESET}")
+                return
+            rows = []
+            for rung in report["rungs"]:
+                net = rung["net_cagr"]
+                colour = GREEN if net > 0 else RED
+                rows.append([capacity._money(rung["aum"]),
+                             f"{colour}{net * 100:+.1f}%{RESET}",
+                             f"{rung['average_bps']:.0f}",
+                             f"{rung['participation'] * 100:.2f}%"])
+            self.table(["fund size", "net CAGR", "cost bps", "% of ADV"], rows, aligns="<>>>")
+            self.write("")
+            for line in capacity.verdict(report):
+                self.para(line)
+            self.para("Square-root impact: cost grows with the square root of the share of daily "
+                      "volume you take. The backtest's own commission and slippage are already in "
+                      "the gross number; this is what size adds on top.", colour=FAINT)
+        self.job(f"cap {strategy} {symbol}", work)
+
+    def cmd_allocate(self, args: list[str]) -> None:
+        """`alloc SYM SYM ...` -- equal weight vs inverse variance vs HRP."""
+        symbols = [a.upper() for a in args] or quotes.watchlist()
+
+        def work(entry):
+            from . import allocate
+            series = {}
+            for symbol in symbols[:12]:
+                try:
+                    bars = load(symbol)
+                    closes = [b.close for b in bars]
+                    series[symbol] = [closes[i] / closes[i - 1] - 1.0
+                                      for i in range(1, len(closes)) if closes[i - 1] > 0]
+                except Exception as e:
+                    self.write(f"{ui.GUTTER}{RED}{symbol}: {str(e)[:60]}{RESET}")
+            if len(series) < 2:
+                self.write(f"{ui.GUTTER}{DIM}Give me at least two symbols.{RESET}")
+                return
+            report = allocate.summarise(list(series), series)
+            self.rule("allocation  " + " ".join(sorted(series)))
+            if not report.get("ok"):
+                self.write(f"{ui.GUTTER}{RED}{report.get('error')}{RESET}")
+                return
+            names = report["names"]
+            rows = []
+            for label, info in report["schemes"].items():
+                rows.append([label, f"{info['annual_vol'] * 100:.1f}%"]
+                            + [f"{info['weights'][n] * 100:.0f}%" for n in names])
+            self.table(["scheme", "vol/yr"] + names, rows, aligns="<" + ">" * (len(names) + 1))
+            self.write("")
+            best = min(report["schemes"], key=lambda k: report["schemes"][k]["annual_vol"])
+            self.para(f"Lowest volatility for the same book: {best}.")
+            self.para("Hierarchical risk parity clusters correlated names first, so three versions of "
+                      "the same trade share one slot instead of taking three. No matrix inverse and no "
+                      "expected returns, which is why it survives out of sample where mean-variance "
+                      "does not.")
+        self.job("alloc " + " ".join(symbols[:12]), work)
+
+    def cmd_purged(self, args: list[str]) -> None:
+        """`cv` -- purged, embargoed cross-validation."""
+        strategy, symbol, start, params = self._parse_run(args)
+
+        def work(entry):
+            from . import quant
+            bars = load(symbol, start=start or None)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol)
+            self.session.last_result = result
+            rets = self._daily_returns(result)
+            per_year = data.periods_per_year(symbol, "1d")
+            folds = quant.purged_splits(len(rets), folds=5, embargo=0.01)
+            if not folds:
+                self.write(f"{ui.GUTTER}{DIM}Not enough history to split.{RESET}")
+                return
+            self.rule(f"{symbol}  {strategy}  purged cross-validation")
+            rows, scores = [], []
+            for index, (train, test) in enumerate(folds, 1):
+                in_sr = quant.annualise(quant.sharpe([rets[i] for i in train]), per_year)
+                out_sr = quant.annualise(quant.sharpe([rets[i] for i in test]), per_year)
+                scores.append(out_sr)
+                rows.append([str(index), f"{len(train):,}", f"{len(test):,}",
+                             f"{in_sr:+.2f}", ui.tint(out_sr, f"{out_sr:+.2f}")])
+            self.table(["fold", "train", "test", "in", "out"], rows, aligns="<>>>>")
+            self.write("")
+            mean = sum(scores) / len(scores)
+            worst = min(scores)
+            self.para(f"Mean out-of-sample Sharpe {mean:+.2f}, worst fold {worst:+.2f}. The bars "
+                      "either side of each test window are dropped, so a signal built from tomorrow's "
+                      "return cannot train on a bar the test set is about to use.")
+            if worst < 0:
+                self.para("At least one fold loses money. A strategy that only works in some regimes "
+                          "is a regime bet wearing a strategy's clothes.", colour=AMBER)
+        self.job(f"cv {strategy} {symbol}", work)
 
     def cmd_montecarlo(self, args: list[str]) -> None:
         strategy, symbol, start, params = self._parse_run(args)
@@ -1756,6 +2046,13 @@ COMMANDS = {
     "wf": Terminal.cmd_walkforward, "forward": Terminal.cmd_walkforward,
     "costs": Terminal.cmd_costs,
     "mc": Terminal.cmd_montecarlo, "carlo": Terminal.cmd_montecarlo,
+    "stats": Terminal.cmd_stats, "real": Terminal.cmd_stats,
+    "pbo": Terminal.cmd_pbo, "overfit": Terminal.cmd_pbo,
+    "dsr": Terminal.cmd_dsr, "deflated": Terminal.cmd_dsr,
+    "factor": Terminal.cmd_factor, "alpha": Terminal.cmd_factor,
+    "cap": Terminal.cmd_capacity, "capacity": Terminal.cmd_capacity,
+    "alloc": Terminal.cmd_allocate, "hrp": Terminal.cmd_allocate,
+    "cv": Terminal.cmd_purged, "purged": Terminal.cmd_purged,
     "replay": Terminal.cmd_replay,
     "trades": Terminal.cmd_trades,
     "runs": Terminal.cmd_runs,

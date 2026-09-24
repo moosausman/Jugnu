@@ -15,6 +15,8 @@ from .notion_service import NotionService
 from .trading_tools import (
     backtest_strategy,
     open_trading_terminal,
+    stress_test_strategy,
+    compare_allocations,
     run_in_trading_terminal,
     list_strategies,
     paper_trade,
@@ -2731,6 +2733,8 @@ _tool_functions = [
     paper_trade,
     past_backtests,
     open_trading_terminal,
+    stress_test_strategy,
+    compare_allocations,
     run_in_trading_terminal,
 ]
 

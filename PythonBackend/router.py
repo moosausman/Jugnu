@@ -59,8 +59,10 @@ def is_answer_to(question: str, message: str) -> bool:
 
 
 _AGENT_SESSION = re.compile(
-    r"\b(?:on|in|using|from|with)\s+(?:the\s+)?(?:jugnu(?:'s)?\s+(?:account|user|desktop|mac|session|login)|"
-    r"your\s+(?:own\s+)?(?:account|desktop|user|mac|login|session)|agent\s+(?:account|session|desktop))\b", re.I)
+    # "on jugnu", with nothing after it, is how this actually gets said.
+    r"\b(?:on|in|using|from|with)\s+(?:the\s+)?(?:jugnu(?:'s)?(?:\s+(?:account|user|desktop|mac|session|login))?|"
+    r"your\s+(?:own\s+)?(?:account|desktop|user|mac|login|session)|agent\s+(?:account|session|desktop)|"
+    r"the\s+other\s+(?:user|account|desktop|session))\b", re.I)
 _PRIMARY_SESSION = re.compile(r"\b(?:on|in)\s+my\s+(?:own\s+)?(?:account|desktop|mac|login|user)\b", re.I)
 _BACKGROUND = re.compile(
     r"\b(?:in\s+the\s+background(?!\s+(?:of|image|color|colour|picture|photo))|background\s+(?:task|job)|while\s+i(?:'m| am)\s+(?:away|busy|working)|"

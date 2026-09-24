@@ -108,6 +108,19 @@ def _split_volume(obj: str) -> tuple[str, Optional[int]]:
     return obj[:match.start()].strip().strip(","), level
 
 
+# "open a terminal on jugnu" is "open a terminal", run over there. Which
+# account it lands in is carried separately, by _session_hint.
+_SESSION_TAIL = re.compile(
+    r"[\s,]+(?:over\s+)?(?:on|in)\s+(?:the\s+)?(?:jugnu(?:'s)?(?:\s+(?:account|user|desktop|mac|session|login))?"
+    r"|(?:my|your)(?:\s+own)?\s+(?:account|user|desktop|mac|session|login)"
+    r"|agent(?:\s+(?:account|session|desktop))?"
+    r"|(?:the\s+)?other\s+(?:user|account|desktop|session))[\s.!?,]*$", re.I)
+
+
+def _strip_session(text: str) -> str:
+    return _SESSION_TAIL.sub("", text).strip().strip(",")
+
+
 def _session_hint(text: str) -> Optional[str]:
     import router
     return router.session_hint(text)
@@ -115,7 +128,7 @@ def _session_hint(text: str) -> Optional[str]:
 
 def parse(text: str) -> Optional[Intent]:
     """The one tool call `text` asks for, or None if it isn't obviously one."""
-    t = _clean(text)
+    t = _clean(_strip_session(" ".join((text or "").split())))
     low = t.lower()
     if not t or len(t) > 120:
         return None
@@ -150,7 +163,7 @@ def parse(text: str) -> Optional[Intent]:
                                  lambda r, v=level: f"Volume at {v}%.", "primary")
         return intent
     # -- open <app> -----------------------------------------------------------------
-    m = re.fullmatch(r"(?:open|launch|start) (?:up )?(?:the )?(.+?)(?: app)?", t, flags=re.I)
+    m = re.fullmatch(r"(?:open|launch|start) (?:up )?(?:the |a |an )?(.+?)(?: app)?", t, flags=re.I)
     if m:
         app = installed_app(m.group(1))
         if app:
