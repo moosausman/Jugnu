@@ -205,6 +205,60 @@ class SearchLedgerTests(unittest.TestCase):
                 0.95, places=3, msg=f"trials={trials}")
 
 
+class ToolKnowledgeTests(unittest.TestCase):
+    """What the model is told the terminal can do.
+
+    The tool docstring is the only place it learns this. There were already
+    tests that it does not promise commands which do not exist; these are
+    the other direction, which is how `exec`, `search` and `micro` all got
+    built and then never mentioned to the thing meant to use them.
+    """
+
+    # Commands that drive the window rather than produce an answer. Sending
+    # `quit` would close the terminal Jugnu just opened.
+    INTERACTIVE = {"help", "?", "tour", "start", "learn", "clear", "quit", "exit",
+                   "jobs", "job", "g", "graph", "chart"}
+
+    def surface(self):
+        import collections
+
+        from trading import terminal as term
+        byfn = collections.defaultdict(list)
+        for name, fn in term.COMMANDS.items():
+            byfn[fn.__name__].append(name)
+        return byfn
+
+    def listed(self):
+        from tools.trading_tools import open_trading_terminal
+        block = open_trading_terminal.__doc__.split("Terminal commands you can pass")[1]
+        block = block.split("Not worth sending")[0]
+        # Exactly four spaces then the command. A looser rule reads the
+        # second line of a wrapped description as a command name.
+        return {line.split()[0] for line in block.splitlines()
+                if line.startswith("    ") and not line.startswith("     ") and line.strip()}
+
+    def test_every_useful_command_is_offered(self):
+        listed = self.listed()
+        forgotten = []
+        for aliases in self.surface().values():
+            if set(aliases) & self.INTERACTIVE:
+                continue
+            if not set(aliases) & listed:
+                forgotten.append("/".join(sorted(aliases)))
+        self.assertEqual(forgotten, [],
+                         "these commands exist but the model is never told about them")
+
+    def test_nothing_offered_is_imaginary(self):
+        from trading import terminal as term
+        for name in self.listed():
+            self.assertIn(name, term.COMMANDS, f"the docstring promises `{name}`")
+
+    def test_the_window_commands_are_deliberately_withheld(self):
+        listed = self.listed()
+        for name in ("quit", "clear", "tour"):
+            self.assertNotIn(name, listed, f"`{name}` drives the window; sending it is a mistake")
+
+
 class RegressionTests(unittest.TestCase):
     def test_inverse_is_a_real_inverse(self):
         matrix = [[4.0, 1.2, 0.3], [1.2, 3.0, 0.7], [0.3, 0.7, 2.5]]

@@ -613,34 +613,65 @@ def open_trading_terminal(count: int = 1, session: str = "", commands: list = No
     backtest a different stock in each" is one call: count=4 with four
     commands. Windows tile across the display automatically when count > 1.
 
-    Terminal commands you can pass (same language the terminal itself
+    Terminal commands you can pass (the same language the terminal itself
     speaks, `;` chains several in one window):
-        q NVDA                    quote and sparkline
-        ch AAPL 5m 120            price chart, 5-minute bars
+
+      prices and the market
+        q NVDA                    quote, day's range, sparkline
+        ch AAPL 5m 120            price chart; minute bars for day trading
         watch BTC-USD 1m          a live chart that refreshes itself
-        bt sma AAPL 2015          backtest a strategy vs buy & hold
-        vs sma rsi MSFT           strategies side by side
-        risk sma TSLA             drawdowns, VaR, beta, trade stats
+        wl add NVDA               the watchlist; `wl` lists, `wl rm` removes
+        mkt SPY QQQ               what sits in the markets panel
+        screen rsi<35 vol>2       scan the watchlist against filters
+        corr AAPL MSFT NVDA       how they move together
+        signals                   what every strategy says right now
+        alert NVDA < 200          tell me when; bare `alert` lists them
+        unalert 1                 remove alert number 1
+
+      backtesting
+        bt sma AAPL 2015          backtest against buy & hold
+        vs sma rsi MSFT           several strategies side by side
+        risk sma TSLA             drawdowns, VaR, beta, year by year
+        y                         the year-by-year table on its own
+        trades                    every trade the last run made
+        runs                      backtests saved earlier
         sweep rsi SPY             every parameter combination, as a heatmap
         wf sma QQQ 5              walk forward: tune, then trade blind
         mc sma AAPL               Monte Carlo: the same trades, reshuffled
-        stats sma AAPL            is the Sharpe real? bootstrap CI, track record
-        pbo sma AAPL              probability the sweep overfitted
-        dsr sma AAPL              Sharpe after paying for the search
-        cv sma AAPL               purged, embargoed cross-validation
-        factor sma AAPL           alpha vs market/size/value/momentum
-        cap sma AAPL              fund size before impact eats the edge
-        alloc SPY QQQ TLT GLD     equal vs inverse-variance vs HRP
         costs sma AAPL            what slippage does to it
+        replay sma AAPL           watch it trade, bar by bar
         pf sma:AAPL, rsi:SPY      a portfolio of sleeves, rebalanced
-        screen rsi<35 vol>2       scan the watchlist
-        corr AAPL MSFT NVDA       how they move together
-        signals                   what every strategy says right now
-        fa AAPL                   fundamentals (OpenBB) · `opt AAPL` options
-        why TSLA                  what moved it today
+
+      whether any of it is real -- the part that can FAIL a strategy
+        stats sma AAPL            probabilistic Sharpe and a bootstrap CI
+        pbo sma AAPL              probability the parameter search overfitted
+        dsr sma AAPL              Sharpe after paying for every trial ever run
+        search AAPL               the whole search ledger, and the bar it set
+        forget AAPL               clear that ledger (rarely honest)
+        cv sma AAPL               purged, embargoed cross-validation
+        factor sma AAPL           alpha vs market, size, value, momentum
+
+      execution and capacity
+        exec AAPL 300000 buy      six execution algos through an order book
+        cap sma AAPL              fund size before market impact eats the edge
+        micro BTCUSDT             measure a REAL book and tape (crypto only)
+        alloc SPY QQQ TLT GLD     equal vs inverse-variance vs HRP weights
+
+      strategies, accounts, data
+        strats                    what strategies exist
+        show rsi                  one strategy's source
         build buy BTC when RSI<30 writes a real strategy and runs it
-        paper start sma AAPL      a simulated account on live prices
-        alert NVDA < 200          tell me when
+        paper start sma AAPL      a paper account on live prices
+        fa AAPL                   fundamentals (needs OpenBB)
+        opt AAPL                  options chain (needs OpenBB)
+        why TSLA                  what moved it today
+        explain sharpe            plain English for any term, free
+        ask <question>            interrogate the last result
+        source                    where the data comes from
+        on jugnu                  run heavy work in the other account
+
+    Not worth sending: help, tour, clear, quit, jobs, job, g. They drive the
+    window rather than produce an answer, and `quit` closes it.
 
     Args:
         count: How many terminal windows to open (1-8).
