@@ -579,6 +579,125 @@ def measure_microstructure(symbol: str = "BTCUSDT", date: str = "") -> dict:
     return out
 
 
+def rotman_competition(action: str = "status", symbols: list = None,
+                       positions: dict = None, cash: float = 0.0,
+                       last_trade: str = "", objective: str = "minvar") -> dict:
+    """The Rotman Portfolio Management Competition: its rules, its
+    benchmark, and weights that satisfy both.
+
+    The competition scores the SHARPE RATIO over five months, with cash
+    capped under 10%, no position over 20%, and a penalty for going more
+    than fourteen days without trading. Under those constraints the Sharpe
+    is decided far more by controlling volatility than by picking well,
+    which is why the sizing defaults to minimum variance.
+
+    This never places an order. It produces a target book and a list of
+    what is out of line; the person enters the trades on the competition's
+    own platform, and their rules on automated assistance are theirs to
+    read.
+
+    Args:
+        action: One of
+            "status"    dates, rules, benchmark composition
+            "check"     test a book against the three rules; needs
+                        `positions` and `cash`, and `last_trade` for the
+                        fortnightly rule
+            "optimise"  weights for `symbols` under the constraints
+            "benchmark" the five-ETF benchmark's performance
+            "eligible"  are `symbols` allowed? US and Canadian listings only
+        symbols: Tickers, for "optimise" and "eligible".
+        positions: {ticker: market value}, signed, for "check". A short is
+            negative.
+        cash: Cash in dollars, for "check".
+        last_trade: "YYYY-MM-DD" of the last trade, for "check".
+        objective: "minvar" (default), "parity", or "sharpe".
+    """
+    import datetime as _dt
+
+    from trading import rpmc
+
+    action = (action or "status").strip().lower()
+    if isinstance(symbols, str):
+        symbols = [s for s in symbols.replace(",", " ").split() if s]
+    symbols = [str(s).strip().upper() for s in (symbols or [])]
+
+    if action in ("status", "rules"):
+        today = _dt.date.today()
+        opens = _dt.date.fromisoformat(rpmc.START)
+        closes = _dt.date.fromisoformat(rpmc.END)
+        phase = ("not started" if today < opens
+                 else "running" if today <= closes else "finished")
+        return {"ok": True, "phase": phase, "opens": rpmc.START, "closes": rpmc.END,
+                "days_until_open": max(0, (opens - today).days),
+                "days_left": max(0, (closes - today).days) if phase == "running" else None,
+                "rules": {"max_position": rpmc.MAX_POSITION, "max_cash": rpmc.MAX_CASH,
+                          "trade_every_days": rpmc.TRADE_EVERY_DAYS},
+                "benchmark": {p: {"weight": w, "name": n, "loads_as": f}
+                              for p, f, w, n in rpmc.BENCHMARK},
+                "scoring": "50% Sharpe ratio ranking, 50% presentation",
+                "note": "Nothing here places orders; the trades are entered by hand."}
+
+    if action in ("check", "book"):
+        if not positions:
+            return _fail("Give me the book as {ticker: market value}, negative for a short.")
+        clean = {str(k).upper(): float(v) for k, v in positions.items()}
+        report = rpmc.compliance(clean, float(cash or 0.0), last_trade)
+        if not report.get("ok"):
+            return _fail(report["error"])
+        return {"ok": True, "compliant": report["compliant"],
+                "equity": round(report["equity"], 2),
+                "cash_share": round(report["cash_share"], 4),
+                "gross_leverage": round(report["leverage"], 3),
+                "days_since_trade": report["days_since_trade"],
+                "positions": [{"ticker": p["ticker"], "share": round(p["share"], 4),
+                               "side": p["side"]} for p in report["positions"]],
+                "breaches": report["breaches"], "warnings": report["warnings"],
+                "advice": rpmc.advice(report)}
+
+    if action in ("optimise", "optimize", "weights", "size"):
+        if len(symbols) < 2:
+            return _fail("Give me at least two tickers to weight.")
+        found = rpmc.candidates(symbols)
+        if len(found["series"]) < 2:
+            return _fail("Not enough eligible securities loaded. Rejected: "
+                         + "; ".join(f"{k} ({v})" for k, v in found["rejected"].items()))
+        try:
+            result = rpmc.optimise(found["series"], objective=objective)
+        except rpmc.RpmcError as e:
+            return _fail(str(e))
+        return {"ok": True, "objective": result["objective"],
+                "weights": {k: round(v, 4) for k, v in result["weights"].items()},
+                "cash": round(result["cash"], 4),
+                "largest_position": round(result["largest"], 4),
+                "volatility_annual": round(result["volatility_annual"], 4),
+                "sharpe_annual_in_sample": round(result["sharpe_annual"], 3),
+                "rejected": found["rejected"] or None,
+                "caveat": ("These are in-sample figures from past returns; the Sharpe is what the "
+                           "book WOULD have scored, not a forecast. Minimum variance is the default "
+                           "because covariance is estimable over a few months and expected returns "
+                           "are not.")}
+
+    if action in ("benchmark", "bench"):
+        report = rpmc.benchmark(symbols[0] if symbols else rpmc.START)
+        if not report.get("ok"):
+            return {"ok": True, "not_started": report.get("not_started", False),
+                    "message": report.get("error"), "legs": report.get("legs")}
+        from trading import quant
+        return {"ok": True, "start": report["start"], "end": report["end"],
+                "days": report["days"],
+                "total_return": round(report["total_return"], 4),
+                "sharpe_annual": round(quant.annualise(quant.sharpe(report["returns"]), 252), 3),
+                "legs": report["legs"], "missing": report["missing"] or None}
+
+    if action in ("eligible", "allowed"):
+        if not symbols:
+            return _fail("Give me tickers to check.")
+        return {"ok": True, "checked": [rpmc.listing(t) for t in symbols],
+                "rule": "US and Canadian exchanges only"}
+
+    return _fail(f'No RPMC action "{action}". Use status, check, optimise, benchmark or eligible.')
+
+
 def compare_allocations(symbols: list, start: str = "") -> dict:
     """Weight a basket three ways and report what each does to portfolio risk.
 
@@ -690,6 +809,10 @@ def open_trading_terminal(count: int = 1, session: str = "", commands: list = No
         ask <question>            interrogate the last result
         source                    where the data comes from
         on jugnu                  run heavy work in the other account
+        rpmc                      Rotman competition: rules and benchmark
+        rpmc opt SPY XIC.TO GLD   weights under its 20% / cash / Sharpe rules
+        rpmc check AAPL=250000    test a book against the competition rules
+        rpmc eligible SHOP.TO     is a ticker allowed? US and Canada only
 
     Not worth sending: help, tour, clear, quit, jobs, job, g. They drive the
     window rather than produce an answer, and `quit` closes it.

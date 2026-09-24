@@ -550,6 +550,7 @@ class Terminal:
                 ("cap STRAT SYM", "how much money before impact eats it"),
                 ("exec SYM 50000 buy", "six execution algos through a real order book"),
                 ("micro [BTCUSDT]", "measure a real book and tape; check the model"),
+                ("rpmc", "the Rotman competition: rules, benchmark, weights"),
                 ("alloc SYM SYM…", "equal vs inverse-variance vs HRP"),
             ]),
             ("paper", [
@@ -1275,6 +1276,216 @@ class Terminal:
                 self.para("At least one fold loses money. A strategy that only works in some regimes "
                           "is a regime bet wearing a strategy's clothes.", colour=AMBER)
         self.job(f"cv {strategy} {symbol}", work)
+
+    def cmd_rpmc(self, args: list[str]) -> None:
+        """`rpmc [check|opt|bench|eligible] …` -- the Rotman competition:
+        its rules, its benchmark, and weights that satisfy both."""
+        action = (args[0].lower() if args else "status")
+        rest = args[1:]
+
+        def work(entry):
+            from . import rpmc
+            if action in ("status", "rules"):
+                self._rpmc_status(rpmc)
+            elif action in ("check", "book"):
+                self._rpmc_check(rpmc, rest)
+            elif action in ("opt", "weights", "size"):
+                self._rpmc_optimise(rpmc, rest)
+            elif action in ("bench", "benchmark"):
+                self._rpmc_benchmark(rpmc, rest)
+            elif action in ("eligible", "allowed"):
+                self._rpmc_eligible(rpmc, rest)
+            else:
+                self.write(f"{ui.GUTTER}{RED}no rpmc action '{action}'{RESET}")
+                self.para("Try: rpmc · rpmc bench · rpmc eligible SHOP.TO · "
+                          "rpmc opt SPY XIC.TO GLD XBB.TO IEMG · "
+                          "rpmc check AAPL=250000 cash=50000 since=2026-10-20")
+        self.job(f"rpmc {action}", work)
+
+    def _rpmc_status(self, rpmc) -> None:
+        import datetime as date_module
+        today = date_module.date.today()
+        opens = date_module.date.fromisoformat(rpmc.START)
+        closes = date_module.date.fromisoformat(rpmc.END)
+        self.rule("Rotman Portfolio Management Competition")
+        if today < opens:
+            phase, left = "not started", (opens - today).days
+            label = f"{left}d to open"
+        elif today <= closes:
+            phase, left = "running", (closes - today).days
+            label = f"{left}d left"
+        else:
+            phase, label = "finished", "—"
+        self.stats([
+            ("phase", f"{INK}{phase}{RESET}"),
+            ("opens", f"{INK}{rpmc.START}{RESET}"),
+            ("closes", f"{INK}{rpmc.END}{RESET}"),
+            ("", f"{CLAY}{label}{RESET}"),
+        ])
+        self.write("")
+        self.write(f"{ui.GUTTER}{FAINT}the three rules, all scored{RESET}")
+        for text in (f"no position over {rpmc.MAX_POSITION:.0%} of the book, long or short",
+                     f"cash under {rpmc.MAX_CASH:.0%} of the book",
+                     f"at least one trade every {rpmc.TRADE_EVERY_DAYS} days, or a penalty"):
+            self.write(f"{ui.GUTTER}{DIM}·{RESET} {INK}{text}{RESET}")
+        self.write("")
+        self.write(f"{ui.GUTTER}{FAINT}benchmark{RESET}")
+        for platform, feed, weight, name in rpmc.BENCHMARK:
+            note = f"{DIM} (loads as {feed}){RESET}" if feed != platform else ""
+            self.write(f"{ui.GUTTER}{INK}{weight:>4.0%}{RESET} {CLAY}{platform:<8}{RESET}"
+                       f"{DIM}{name}{RESET}{note}")
+        self.write("")
+        self.para("Scored 50% on the Sharpe ratio ranking and 50% on the presentation. Over five "
+                  "months, with cash capped low and no position over a fifth, the Sharpe is decided "
+                  "much more by controlling volatility than by picking well -- which is why "
+                  "`rpmc opt` minimises variance by default.")
+        self.para("Nothing here places an order. It produces a target book; you enter the trades on "
+                  "the competition's own platform. Read their rules on automated assistance before "
+                  "leaning on any of this.", colour=AMBER)
+
+    def _rpmc_check(self, rpmc, args: list[str]) -> None:
+        positions, cash, since = {}, 0.0, ""
+        for token in args:
+            if "=" not in token:
+                self.write(f"{ui.GUTTER}{RED}'{token}' should look like AAPL=250000{RESET}")
+                return
+            key, value = token.split("=", 1)
+            if key.lower() == "cash":
+                cash = float(value)
+            elif key.lower() in ("since", "last", "traded"):
+                since = value
+            else:
+                positions[key.upper()] = float(value)
+        if not positions:
+            self.para("Give me the book: `rpmc check AAPL=250000 GLD=-90000 cash=50000 "
+                      "since=2026-10-20`. Values are market value in dollars, negative for a short.")
+            return
+        report = rpmc.compliance(positions, cash, since)
+        if not report.get("ok"):
+            self.write(f"{ui.GUTTER}{RED}{report['error']}{RESET}")
+            return
+        self.rule("RPMC  compliance")
+        self.stats([
+            ("equity", f"{INK}{ui.money(report['equity'])}{RESET}"),
+            ("cash", ui.tint(rpmc.MAX_CASH - report["cash_share"], f"{report['cash_share']:.1%}")),
+            ("gross", f"{INK}{report['leverage']:.2f}x{RESET}"),
+            ("since trade", f"{INK}{report['days_since_trade']}d{RESET}"
+                            if report["days_since_trade"] is not None else f"{DIM}—{RESET}"),
+            ("verdict", f"{GREEN}clear{RESET}" if report["compliant"] else f"{RED}breach{RESET}"),
+        ])
+        self.write("")
+        rows = []
+        for item in report["positions"]:
+            over = item["share"] > rpmc.MAX_POSITION + 1e-9
+            rows.append([item["ticker"], item["side"], ui.money(item["value"]),
+                         f"{RED if over else INK}{item['share']:.1%}{RESET}"])
+        self.table(["ticker", "side", "value", "share"], rows, aligns="<<>>")
+        self.write("")
+        for line in report["breaches"]:
+            self.para(line, colour=RED, marker="!")
+        for line in report["warnings"]:
+            self.para(line, colour=AMBER)
+        for line in rpmc.advice(report):
+            self.para(line)
+
+    def _rpmc_optimise(self, rpmc, args: list[str]) -> None:
+        objective = "minvar"
+        tickers = []
+        for token in args:
+            if token.lower() in ("minvar", "sharpe", "parity"):
+                objective = token.lower()
+            else:
+                tickers.append(token.upper())
+        if len(tickers) < 2:
+            self.para("Give me at least two tickers: `rpmc opt SPY XIC.TO GLD XBB.TO IEMG`. "
+                      "Add `sharpe` or `parity` to change the objective.")
+            return
+        found = rpmc.candidates(tickers)
+        for ticker, why in found["rejected"].items():
+            self.write(f"{ui.GUTTER}{AMBER}skipped {ticker}: {why}{RESET}")
+        if len(found["series"]) < 2:
+            self.write(f"{ui.GUTTER}{RED}Not enough eligible securities loaded.{RESET}")
+            return
+        try:
+            result = rpmc.optimise(found["series"], objective=objective)
+        except rpmc.RpmcError as e:
+            self.write(f"{ui.GUTTER}{RED}{e}{RESET}")
+            return
+        self.rule(f"RPMC  target book  ({objective})")
+        self.stats([
+            ("names", f"{INK}{len(result['weights'])}{RESET}"),
+            ("invested", f"{INK}{1 - result['cash']:.0%}{RESET}"),
+            ("largest", f"{INK}{result['largest']:.1%}{RESET}"),
+            ("vol/yr", f"{INK}{result['volatility_annual'] * 100:.1f}%{RESET}"),
+            ("sharpe/yr", ui.tint(result["sharpe_annual"], f"{result['sharpe_annual']:.2f}")),
+        ])
+        self.write("")
+        # A leading space: a right-aligned column beside a left-aligned one
+        # has only the table's own padding between them, and a solid bar
+        # closes that gap up visually.
+        rows = [[ticker, f"{weight:.1%}",
+                 " " + ui.bar(weight, rpmc.MAX_POSITION, 24, CLAY)]
+                for ticker, weight in sorted(result["weights"].items(), key=lambda kv: -kv[1])]
+        self.table(["ticker", "weight", ""], rows, aligns="<><")
+        self.write("")
+        if objective == "sharpe":
+            self.para("Maximum expected Sharpe needs expected returns, and five months of history "
+                      "barely estimates them. The means are shrunk hard toward their average to stop "
+                      "it betting the book on the noisiest name, and it will still concentrate more "
+                      "than minimum variance would. Compare the two before trusting it.", colour=AMBER)
+        else:
+            self.para("Minimum variance, which on a Sharpe-scored contest is usually the better bet: "
+                      "it needs only the covariance, and covariance is the part of the estimate that "
+                      "is actually measurable over a few months.")
+        self.para(f"Every weight is inside the {rpmc.MAX_POSITION:.0%} cap and the book is "
+                  f"{1 - result['cash']:.0%} invested, so it satisfies the position and cash rules "
+                  "as it stands. It says nothing about the fortnightly trade rule.", colour=FAINT)
+
+    def _rpmc_benchmark(self, rpmc, args: list[str]) -> None:
+        start = args[0] if args else rpmc.START
+        report = rpmc.benchmark(start)
+        self.rule("RPMC  benchmark")
+        if not report.get("ok"):
+            self.write(f"{ui.GUTTER}{AMBER}{report['error']}{RESET}")
+            if report.get("not_started"):
+                self.para("To see how the basket has behaved, give it a past date: "
+                          "`rpmc bench 2026-01-02`.")
+            return
+        self.stats([
+            ("from", f"{INK}{report['start']}{RESET}"),
+            ("to", f"{INK}{report['end']}{RESET}"),
+            ("days", f"{INK}{report['days']}{RESET}"),
+            ("return", ui.percent(report["total_return"] * 100)),
+        ])
+        if report["returns"]:
+            from . import quant
+            per = quant.sharpe(report["returns"])
+            self.write("")
+            self.write(f"{ui.GUTTER}{DIM}sharpe/yr{RESET} "
+                       f"{INK}{quant.annualise(per, 252):.2f}{RESET}"
+                       f"{DIM}  -- the number you are ranked against{RESET}")
+            self.write(*ui.braille([(report["values"], CLAY)], _width() - 4, 9))
+        if report["missing"]:
+            self.para("Not loaded: " + "; ".join(report["missing"]), colour=AMBER)
+
+    def _rpmc_eligible(self, rpmc, args: list[str]) -> None:
+        if not args:
+            self.para("Give me tickers: `rpmc eligible SHOP.TO BP.L AAPL`.")
+            return
+        self.rule("RPMC  eligibility")
+        rows = []
+        for ticker in args:
+            check = rpmc.listing(ticker)
+            if not check.get("ok"):
+                rows.append([ticker.upper(), "—", f"{RED}unknown{RESET}", check["error"][:40]])
+                continue
+            mark = f"{GREEN}allowed{RESET}" if check["eligible"] else f"{RED}not allowed{RESET}"
+            rows.append([ticker.upper(), check["symbol"], mark,
+                         f"{check['exchange']} · {check['currency']}"])
+        self.table(["ticker", "loads as", "status", "listing"], rows, aligns="<<<<")
+        self.para("US and Canadian exchanges only. Checked against the exchange the data feed "
+                  "reports, not a constituent list that would be out of date by December.",
+                  colour=FAINT)
 
     def cmd_micro(self, args: list[str]) -> None:
         """`micro [SYM] [day]` -- measure a real order book and real tape,
@@ -2302,6 +2513,7 @@ COMMANDS = {
     "cv": Terminal.cmd_purged, "purged": Terminal.cmd_purged,
     "exec": Terminal.cmd_execute, "fills": Terminal.cmd_execute,
     "micro": Terminal.cmd_micro, "book": Terminal.cmd_micro,
+    "rpmc": Terminal.cmd_rpmc, "rotman": Terminal.cmd_rpmc,
     "replay": Terminal.cmd_replay,
     "trades": Terminal.cmd_trades,
     "runs": Terminal.cmd_runs,

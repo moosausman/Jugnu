@@ -781,5 +781,159 @@ class MicrostructureTests(unittest.TestCase):
         self.assertLess(worked, swept)
 
 
+class CompetitionTests(unittest.TestCase):
+    """The Rotman competition's constraints, and sizing that respects them.
+    No network: the optimiser and the rules are pure arithmetic."""
+
+    def book(self, n=6, seed=3, length=400):
+        """Three names driven by one factor, three independent -- so an
+        allocator that understands correlation has something to find."""
+        rng = random.Random(seed)
+        driver = [rng.gauss(0, 0.012) for _ in range(length)]
+        series = {}
+        for i in range(min(3, n)):
+            series[f"A{i}"] = [driver[k] + rng.gauss(0, 0.002) for k in range(length)]
+        for i in range(n - 3):
+            series[f"B{i}"] = [rng.gauss(0, 0.004 + 0.001 * i) for _ in range(length)]
+        return series
+
+    # -- the projection, which everything else rests on --------------------
+
+    def test_projection_lands_on_the_constraint_set(self):
+        from trading import rpmc
+        rng = random.Random(0)
+        for _ in range(500):
+            n = rng.randint(2, 12)
+            cap = rng.uniform(0.15, 0.6)
+            low = -cap if rng.random() < 0.5 else 0.0
+            total = rng.uniform(max(low * n, 0.0), cap * n)
+            weights = rpmc.project([rng.gauss(0, 0.5) for _ in range(n)], total, low, cap)
+            self.assertAlmostEqual(sum(weights), total, places=9)
+            for w in weights:
+                self.assertGreaterEqual(w, low - 1e-9)
+                self.assertLessEqual(w, cap + 1e-9)
+
+    def test_projection_leaves_a_feasible_point_alone(self):
+        from trading import rpmc
+        already = [0.2, 0.2, 0.2, 0.2, 0.1]
+        self.assertEqual([round(w, 9) for w in rpmc.project(already, 0.9, 0.0, 0.2)],
+                         [round(w, 9) for w in already])
+
+    def test_an_impossible_constraint_is_refused(self):
+        """Three names cannot be 95% invested under a 20% cap. Returning
+        something anyway would be the worst outcome."""
+        from trading import rpmc
+        with self.assertRaises(rpmc.RpmcError):
+            rpmc.project([0.5, 0.5, 0.5], 0.95, 0.0, 0.20)
+        with self.assertRaises(rpmc.RpmcError):
+            rpmc.optimise({"A": [0.01] * 50, "B": [0.02] * 50}, cap=0.20, invested=0.90)
+
+    # -- sizing -------------------------------------------------------------
+
+    def test_every_objective_obeys_the_rules(self):
+        from trading import rpmc
+        for objective in ("minvar", "parity", "sharpe"):
+            result = rpmc.optimise(self.book(), objective=objective)
+            weights = result["weights"]
+            self.assertAlmostEqual(sum(weights.values()), 0.90, places=6, msg=objective)
+            for ticker, weight in weights.items():
+                self.assertLessEqual(weight, rpmc.MAX_POSITION + 1e-9, f"{objective} {ticker}")
+                self.assertGreaterEqual(weight, -1e-9, f"{objective} {ticker}")
+
+    def test_minimum_variance_beats_equal_weight(self):
+        """If it does not, the optimiser is not optimising."""
+        from trading import rpmc
+        series = self.book()
+        names, _, cov = rpmc._moments(series, 0.8, 0.2)
+        equal = [0.90 / len(names)] * len(names)
+        result = rpmc.optimise(series, objective="minvar")
+        self.assertLess(result["volatility_annual"],
+                        math.sqrt(rpmc._variance(equal, cov)) * math.sqrt(252))
+
+    def test_it_underweights_three_versions_of_the_same_trade(self):
+        from trading import rpmc
+        weights = rpmc.optimise(self.book(), objective="minvar")["weights"]
+        cluster = sum(v for k, v in weights.items() if k.startswith("A"))
+        independent = sum(v for k, v in weights.items() if k.startswith("B"))
+        self.assertLess(cluster, independent)
+
+    def test_shorting_is_only_allowed_when_asked(self):
+        from trading import rpmc
+        series = self.book()
+        long_only = rpmc.optimise(series, objective="minvar")
+        self.assertTrue(all(w >= -1e-9 for w in long_only["weights"].values()))
+        both = rpmc.optimise(series, objective="minvar", allow_short=True)
+        self.assertAlmostEqual(sum(both["weights"].values()), 0.90, places=6)
+        for weight in both["weights"].values():
+            self.assertLessEqual(abs(weight), rpmc.MAX_POSITION + 1e-9)
+
+    # -- the rules ----------------------------------------------------------
+
+    def test_a_clean_book_passes(self):
+        from trading import rpmc
+        report = rpmc.compliance({"A": 180_000, "B": 180_000, "C": 180_000,
+                                  "D": 180_000, "E": 180_000, "F": 60_000},
+                                 cash=50_000, last_trade="2026-10-20", today="2026-10-24")
+        self.assertTrue(report["compliant"], report["breaches"])
+
+    def test_each_rule_is_caught_on_its_own(self):
+        from trading import rpmc
+        over = rpmc.compliance({"A": 400_000, "B": 500_000}, cash=100_000,
+                               last_trade="2026-10-23", today="2026-10-24")
+        self.assertFalse(over["compliant"])
+        self.assertTrue(any("cap" in b for b in over["breaches"]))
+
+        cashy = rpmc.compliance({"A": 100_000}, cash=900_000,
+                                last_trade="2026-10-23", today="2026-10-24")
+        self.assertTrue(any("cash" in b for b in cashy["breaches"]))
+
+        stale = rpmc.compliance({"A": 180_000, "B": 180_000, "C": 180_000,
+                                 "D": 180_000, "E": 180_000, "F": 60_000},
+                                cash=50_000, last_trade="2026-10-01", today="2026-10-24")
+        self.assertTrue(any("days since" in b for b in stale["breaches"]))
+
+    def test_a_short_counts_against_the_cap_at_its_absolute_size(self):
+        """A 30% short is a 30% position however the sign reads."""
+        from trading import rpmc
+        report = rpmc.compliance({"A": 500_000, "B": -300_000}, cash=800_000,
+                                 last_trade="2026-10-23", today="2026-10-24")
+        sizes = {p["ticker"]: p["share"] for p in report["positions"]}
+        self.assertAlmostEqual(sizes["B"], 0.30, places=6)
+        self.assertTrue(any("B is 30" in b for b in report["breaches"]))
+
+    def test_the_warning_fires_before_the_breach(self):
+        from trading import rpmc
+        near = rpmc.compliance({"A": 190_000, "B": 180_000, "C": 180_000,
+                                "D": 180_000, "E": 180_000, "F": 40_000},
+                               cash=50_000, last_trade="2026-10-13", today="2026-10-24")
+        self.assertTrue(near["compliant"])
+        self.assertTrue(near["warnings"], "11 days and a 19% position should warn")
+
+    def test_a_worthless_book_is_rejected_not_divided_by(self):
+        from trading import rpmc
+        self.assertFalse(rpmc.compliance({"A": -100.0}, cash=0.0)["ok"])
+
+    # -- symbols and the benchmark -----------------------------------------
+
+    def test_the_platforms_ticker_is_translated(self):
+        from trading import rpmc
+        self.assertEqual(rpmc.yahoo_symbol("IEMG.K"), "IEMG")
+        self.assertEqual(rpmc.yahoo_symbol("AAPL"), "AAPL")
+        self.assertEqual(rpmc.yahoo_symbol("XIC.TO"), "XIC.TO",
+                         "a Toronto suffix is real and must survive")
+
+    def test_the_benchmark_weights_are_the_published_ones(self):
+        from trading import rpmc
+        self.assertAlmostEqual(sum(w for _, _, w, _ in rpmc.BENCHMARK), 1.0, places=9)
+        self.assertEqual(len(rpmc.BENCHMARK), 5)
+
+    def test_before_the_start_it_says_so_instead_of_failing(self):
+        from trading import rpmc
+        report = rpmc.benchmark(start="2099-01-01")
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["not_started"])
+        self.assertGreater(report["days_until"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

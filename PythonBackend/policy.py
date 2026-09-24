@@ -116,6 +116,7 @@ TOOL_POLICIES: dict[str, ToolPolicy] = {
     "compare_allocations": ToolPolicy(L, "trading", note="portfolio weighting schemes"),
     "execution_cost": ToolPolicy(L, "trading", note="simulates an order through a book"),
     "measure_microstructure": ToolPolicy(L, "trading", note="measures a real book and tape"),
+    "rotman_competition": ToolPolicy(L, "trading", note="competition rules, benchmark and sizing"),
     "open_trading_terminal": ToolPolicy(L, "trading", note="opens Terminal windows running the simulator"),
     "run_in_trading_terminal": ToolPolicy(L, "trading", note="types a command into an open simulator window"),
     "schedule_task": ToolPolicy(L, "scheduling", note="runs later under the same approval rules"),

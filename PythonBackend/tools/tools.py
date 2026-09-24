@@ -18,6 +18,7 @@ from .trading_tools import (
     stress_test_strategy,
     execution_cost,
     measure_microstructure,
+    rotman_competition,
     compare_allocations,
     run_in_trading_terminal,
     list_strategies,
@@ -2738,6 +2739,7 @@ _tool_functions = [
     stress_test_strategy,
     execution_cost,
     measure_microstructure,
+    rotman_competition,
     compare_allocations,
     run_in_trading_terminal,
 ]
