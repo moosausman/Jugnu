@@ -406,6 +406,91 @@ class OrderBookTests(unittest.TestCase):
         self.assertEqual([f.owner for f in fills], ["other"])
 
 
+class ResilienceTests(unittest.TestCase):
+    """The two properties that decide whether simulated impact is the right
+    shape: a book that deepens with distance, and one that refills."""
+
+    def bars(self, n=20, volume=100_000):
+        """A random walk. Flat bars have no volatility, and an impact
+        coefficient is defined relative to volatility -- calibration on a
+        flat series is undefined, and says so."""
+        from trading.data import Bar
+        rng = random.Random(4)
+        out, price = [], 100.0
+        for i in range(n):
+            close = price * (1 + rng.gauss(0, 0.0015))
+            out.append(Bar(ts=1_600_000_000 + i * 60, open=price,
+                           high=max(price, close) * 1.0008,
+                           low=min(price, close) * 0.9992,
+                           close=close, volume=volume))
+            price = close
+        return out
+
+    def test_the_book_deepens_away_from_the_touch(self):
+        """Latent liquidity grows with distance. A ladder that thins instead
+        makes deep sweeps explosive and gets the impact law wrong."""
+        from trading.book import SELL
+        from trading.execution import Session
+        session = Session()
+        session._refresh(100.0, 100_000)
+        sizes = [size for _, size in session.book.depth(SELL, levels=10)]
+        self.assertEqual(sizes, sorted(sizes), "depth must not shrink with distance")
+        self.assertGreater(sizes[-1], sizes[0] * 2)
+
+    def test_what_you_eat_leaves_a_hole(self):
+        from trading.book import BUY, SELL, Order
+        from trading.execution import MINE, Session
+        session = Session()
+        session._refresh(100.0, 100_000)
+        before = sum(size for _, size in session.book.depth(SELL, levels=40))
+        session._collect(session.book.submit(
+            Order(BUY, before * 0.4, None, tif="IOC", owner=MINE)))
+        self.assertGreater(session.hole[SELL], 0.0, "consuming depth must be remembered")
+
+    def test_the_hole_refills_over_time(self):
+        from trading.execution import SELL, Session
+        session = Session(resilience=0.5)
+        session.hole[SELL] = 1000.0
+        depths = []
+        for _ in range(4):
+            session._refresh(100.0, 100_000)
+            depths.append(sum(size for _, size in session.book.depth(SELL, levels=40)))
+        self.assertEqual(depths, sorted(depths), "liquidity must come back, not stay gone")
+        self.assertLess(session.hole[SELL], 1000.0)
+
+    def test_working_an_order_beats_sweeping_it(self):
+        """The entire reason execution algorithms exist. If a resilient book
+        did not reward patience, none of them would."""
+        from trading import execution
+        window = self.bars(n=20)
+        swept = execution.execute(window[:1], "buy", 400_000, "market")
+        worked = execution.execute(window, "buy", 400_000, "vwap")
+        self.assertGreater(swept["spread_paid_bps"], worked["spread_paid_bps"])
+
+    def test_impact_scales_as_the_square_root(self):
+        """Four times the size should cost about twice as much, not four
+        times. Measured by fitting the exponent, not asserted."""
+        from trading import capacity
+        fit = capacity.calibrate(self.bars(n=20, volume=200_000))
+        self.assertTrue(fit["ok"], fit.get("error"))
+        self.assertGreater(fit["exponent"], 0.35)
+        self.assertLess(fit["exponent"], 0.65)
+        self.assertTrue(fit["square_root"])
+        self.assertGreater(fit["r2"], 0.9)
+
+    def test_the_fitted_coefficient_is_physically_plausible(self):
+        # Empirical k for equities sits between about 0.3 and 1.5.
+        from trading import capacity
+        fit = capacity.calibrate(self.bars(n=20, volume=200_000))
+        self.assertGreater(fit["k"], 0.05)
+        self.assertLess(fit["k"], 3.0)
+
+    def test_calibration_declines_rather_than_guessing(self):
+        from trading import capacity
+        self.assertFalse(capacity.calibrate([])["ok"])
+        self.assertFalse(capacity.calibrate(self.bars(n=3))["ok"])
+
+
 class ExecutionTests(unittest.TestCase):
     def bars(self, drift=0.0, n=20):
         """Synthetic minute bars, optionally trending."""

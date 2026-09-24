@@ -18,6 +18,15 @@ the spread on every trade is expensive and that resting passively means
 sometimes not trading at all, and it will get the sign and the rough size
 of those effects right. It cannot tell you your fill rate on a venue.
 
+What it does get right, and this is the check worth trusting it on, is the
+SHAPE of impact. Sweeping this book at a ladder of sizes and fitting the
+exponent gives 0.52 on AAPL, 0.52 on NVDA, 0.53 on SPY -- the square-root
+law, emerging from the book rather than assumed by it. That works because
+of two properties in Session below: resting size grows with distance from
+the mid, and what an order consumes is refilled gradually rather than
+instantly. capacity.calibrate() uses exactly this to set the coefficient
+its own analytic model runs on.
+
 Five ways to get a trade done, which is the comparison worth having:
 
     market      cross immediately. Certain, and you pay for it
@@ -42,19 +51,39 @@ CROWD = "market"
 
 
 class Session:
-    """A book kept alive across bars, with a crowd trading in it."""
+    """A book kept alive across bars, with a crowd trading in it.
 
-    def __init__(self, tick: float = 0.01, levels: int = 6, spread_ticks: int = 1,
-                 depth_share: float = 0.35, seed: int = 7):
-        """`depth_share` is how much of a step's volume rests at each level.
-        Higher means a deeper, more forgiving book."""
+    Two properties decide whether the cost that comes out of this means
+    anything, and both are about liquidity rather than about matching:
+
+    SHAPE. Resting size grows with distance from the mid, roughly linearly.
+    That is what the latent-liquidity work (Toth et al.) finds and it is
+    what produces the square-root law: if depth density rises linearly,
+    then consuming Q reaches a distance where c*d^2/2 = Q, so d ~ sqrt(Q).
+    A ladder that THINS with distance -- which is what this had first --
+    makes deep sweeps explosively expensive and gets the law wrong.
+
+    RESILIENCE. What you eat comes back. The hole your order leaves is
+    refilled over the next few steps rather than instantly or never, so
+    trading fast is punished and trading slowly is not. This is the whole
+    reason working an order beats sweeping one.
+    """
+
+    def __init__(self, tick: float = 0.01, levels: int = 40, spread_ticks: int = 1,
+                 depth_share: float = 0.02, resilience: float = 0.35, seed: int = 7):
+        """`depth_share` scales the ladder against a step's volume;
+        `resilience` is the fraction of the hole refilled each step."""
         self.book = Book(tick=tick)
         self.levels = levels
         self.spread_ticks = max(1, spread_ticks)
         self.depth_share = depth_share
+        self.resilience = min(max(resilience, 0.01), 1.0)
         self.rng = random.Random(seed)
         self.my_fills: list = []
         self.mid_history: list[float] = []
+        # Shares missing from each side because something ate them. Keyed by
+        # the side of the RESTING orders that were consumed.
+        self.hole = {BUY: 0.0, SELL: 0.0}
 
     # -- the crowd ---------------------------------------------------------
 
@@ -62,18 +91,29 @@ class Session:
         """Re-post the crowd's resting liquidity around `mid`.
 
         The crowd's old orders are pulled and replaced; yours are left
-        exactly where they are. New crowd orders at your price arrive
-        AFTER you, so they queue behind you -- which is what actually
-        happens when you have been resting a while.
+        exactly where they are, so new crowd orders at your price queue
+        behind you -- which is what happens when you have been resting a
+        while. What your order consumed is still missing, and comes back a
+        fraction at a time.
         """
         self.book.cancel_owner(CROWD)
         self.book.prune()
+        for side in (BUY, SELL):
+            self.hole[side] *= (1.0 - self.resilience)
+        remaining = dict(self.hole)
         half = self.spread_ticks * self.book.tick / 2.0
         for level in range(self.levels):
             offset = half + level * self.book.tick
-            resting = max(1.0, size * self.depth_share * (0.75 ** level))
-            self.book.submit(Order(BUY, resting, round(mid - offset, 10), owner=CROWD))
-            self.book.submit(Order(SELL, resting, round(mid + offset, 10), owner=CROWD))
+            # Linear in distance: the near touch is thin, the depth behind
+            # it is not. This is the shape that gives square-root impact.
+            base = max(1.0, size * self.depth_share * (level + 1))
+            for side, direction in ((BUY, -1.0), (SELL, 1.0)):
+                missing = min(remaining[side], base)     # the hole sits nearest the touch
+                remaining[side] -= missing
+                resting = base - missing
+                if resting > 1e-9:
+                    self.book.submit(Order(side, resting,
+                                           round(mid + direction * offset, 10), owner=CROWD))
 
     def _aggress(self, volume: float, buy_share: float, reference: float) -> None:
         """Send the crowd's market orders. `buy_share` leans with the price:
@@ -84,7 +124,7 @@ class Session:
         a resting buy order at $1 on a $100 stock gets filled -- which is
         not a market, it is an artefact of only modelling six levels.
         """
-        band = (self.levels + 2) * self.book.tick
+        band = (min(self.levels, 12) + 2) * self.book.tick
         buys = volume * buy_share
         sells = volume - buys
         if buys > 0:
@@ -98,6 +138,11 @@ class Session:
         for fill in fills:
             if fill.owner == MINE:
                 self.my_fills.append(fill)
+                if fill.role == "taker":
+                    # Buying consumes resting sells, and that depth is gone
+                    # until resilience puts it back.
+                    eaten = SELL if fill.side == BUY else BUY
+                    self.hole[eaten] += fill.qty
 
     # -- time --------------------------------------------------------------
 

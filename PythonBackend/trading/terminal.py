@@ -1155,7 +1155,16 @@ class Terminal:
             bars = load(symbol, start=start or None)
             result = analysis.backtest(bars, strategy, params, symbol=symbol)
             self.session.last_result = result
-            report = capacity.curve(result, bars, result.metrics["cagr"])
+            # Measure this instrument's impact coefficient by trading through
+            # the book, rather than assuming the conservative default. The
+            # analytic model is what scales over years; this is what sets it.
+            fit = {"ok": False}
+            try:
+                fit = capacity.calibrate(load(symbol, "5m")[-40:])
+            except DataError:
+                pass
+            k = fit["k"] if fit.get("ok") and fit.get("square_root") else capacity.DEFAULT_K
+            report = capacity.curve(result, bars, result.metrics["cagr"], k=k)
             self.rule(f"{symbol}  {strategy}  capacity")
             if not report.get("ok"):
                 self.write(f"{ui.GUTTER}{RED}{report.get('error')}{RESET}")
@@ -1172,6 +1181,14 @@ class Terminal:
             self.write("")
             for line in capacity.verdict(report):
                 self.para(line)
+            if fit.get("ok"):
+                self.para(f"Impact coefficient k={fit['k']:.2f}, measured by sweeping this book at five "
+                          f"sizes and fitting log cost against log participation: the exponent came out "
+                          f"{fit['exponent']:.2f} (R²={fit['r2']:.2f}), against 0.50 for the square-root "
+                          f"law. Not assumed -- fitted.", colour=GREEN if fit["square_root"] else AMBER)
+            else:
+                self.para(f"No intraday data to calibrate against, so k={capacity.DEFAULT_K:.1f}, the "
+                          "conservative default.", colour=FAINT)
             self.para("Square-root impact: cost grows with the square root of the share of daily "
                       "volume you take. The backtest's own commission and slippage are already in "
                       "the gross number; this is what size adds on top.", colour=FAINT)
