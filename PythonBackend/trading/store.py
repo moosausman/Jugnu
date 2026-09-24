@@ -9,6 +9,7 @@ in it.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import uuid
@@ -24,6 +25,12 @@ def _init() -> None:
             interval TEXT, start TEXT, end TEXT, cash REAL, commission REAL, slippage REAL,
             metrics TEXT, benchmark TEXT, equity TEXT, dates TEXT, trades TEXT, notes TEXT
         );
+        CREATE TABLE IF NOT EXISTS trials (
+            fingerprint TEXT PRIMARY KEY, created REAL, symbol TEXT, strategy TEXT,
+            params TEXT, interval TEXT, start TEXT, end TEXT, bars INTEGER,
+            sharpe REAL, total_return REAL
+        );
+        CREATE INDEX IF NOT EXISTS trials_symbol ON trials (symbol, strategy);
         CREATE TABLE IF NOT EXISTS paper (
             id TEXT PRIMARY KEY, created REAL, symbol TEXT, strategy TEXT, params TEXT,
             interval TEXT, cash REAL, start_cash REAL, position REAL, avg_cost REAL,
@@ -31,6 +38,91 @@ def _init() -> None:
         );
     """)
     connect().commit()
+
+
+# ---------------------------------------------------------------------------
+# The search ledger
+# ---------------------------------------------------------------------------
+# Every configuration ever evaluated, one row each, so the deflated Sharpe
+# can charge for the WHOLE search rather than for whichever sweep happens to
+# be on screen. Deflating by one grid is the convenient number; this is the
+# honest one.
+#
+# Keyed by fingerprint, so re-running the same test on the same window is
+# one trial however many times you do it -- you learned nothing new the
+# second time. Change the parameters, the symbol or the window and it is a
+# new trial, because that is a new place you looked.
+
+def _fingerprint(symbol: str, strategy: str, params: dict, interval: str,
+                 start: str, end: str) -> str:
+    seed = "|".join([symbol.upper(), strategy, interval, start, end,
+                     json.dumps(params, sort_keys=True, default=str)])
+    return hashlib.sha1(seed.encode("utf8")).hexdigest()[:16]
+
+
+def record_trial(symbol: str, strategy: str, params: dict, interval: str,
+                 start: str, end: str, bars: int, sharpe: float, total_return: float) -> None:
+    """One evaluated configuration. Cheap enough to call from the inside of
+    a sweep -- it is a single INSERT OR IGNORE against a primary key."""
+    if not symbol or not strategy:
+        return
+    try:
+        _init()
+        connect().execute(
+            "INSERT OR IGNORE INTO trials (fingerprint, created, symbol, strategy, params, "
+            "interval, start, end, bars, sharpe, total_return) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (_fingerprint(symbol, strategy, params, interval, start, end), time.time(),
+             symbol.upper(), strategy, json.dumps(params, sort_keys=True, default=str),
+             interval, start, end, bars, sharpe, total_return))
+        connect().commit()
+    except Exception:
+        # A ledger that breaks a backtest is worse than a ledger with a gap.
+        pass
+
+
+def search_history(symbol: str = "", strategy: str = "") -> dict:
+    """How hard you have looked, and what you found while looking.
+
+    Scoped to a symbol by default: every strategy and parameter set you
+    tried on that instrument is one search for an edge in it, and that is
+    the count the deflation wants. Narrow to a strategy when you only want
+    that family.
+    """
+    _init()
+    where, args = [], []
+    if symbol:
+        where.append("symbol = ?")
+        args.append(symbol.upper())
+    if strategy:
+        where.append("strategy = ?")
+        args.append(strategy)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    rows = connect().execute(
+        f"SELECT sharpe, created, strategy FROM trials{clause}", args).fetchall()
+    if not rows:
+        return {"trials": 0, "sharpes": [], "strategies": [], "first": None, "last": None}
+    sharpes = [r["sharpe"] for r in rows if r["sharpe"] is not None]
+    stamps = [r["created"] for r in rows]
+    return {"trials": len(rows), "sharpes": sharpes,
+            "strategies": sorted({r["strategy"] for r in rows}),
+            "first": min(stamps), "last": max(stamps)}
+
+
+def forget_trials(symbol: str = "", strategy: str = "") -> int:
+    """Clear the ledger. Only honest when the old results genuinely no
+    longer count -- a different dataset, say, not a disappointing number."""
+    _init()
+    where, args = [], []
+    if symbol:
+        where.append("symbol = ?")
+        args.append(symbol.upper())
+    if strategy:
+        where.append("strategy = ?")
+        args.append(strategy)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    cursor = connect().execute(f"DELETE FROM trials{clause}", args)
+    connect().commit()
+    return cursor.rowcount
 
 
 def save_run(result: Result, notes: list[str] | None = None) -> str:

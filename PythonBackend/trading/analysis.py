@@ -14,9 +14,10 @@ anything. Each one exists because a single backtest can't tell you.
 from __future__ import annotations
 
 import itertools
+import math
 import random
 
-from . import metrics
+from . import metrics, store
 from .data import Bar, periods_per_year
 from .engine import Result, run
 from .strategies import get
@@ -34,7 +35,25 @@ def backtest(bars: list[Bar], strategy: str, params: dict | None = None, *, symb
     result.metrics = metrics.summarise(result.equity, periods_per_year=per_year,
                                        trades=result.trades, exposure=result.exposure)
     result.benchmark_metrics = metrics.summarise(result.benchmark, periods_per_year=per_year, exposure=1.0)
+    _record(result, per_year)
     return result
+
+
+def _record(result: Result, per_year: float) -> None:
+    """Log this configuration to the search ledger.
+
+    Called from inside backtest(), so a sweep's every rung counts and not
+    just the one a person typed -- which is the whole point: the deflation
+    has to know how wide the search really was. Per-period Sharpe, because
+    trials from different intervals get pooled.
+    """
+    if not result.symbol or not result.dates:
+        return
+    scale = math.sqrt(per_year) if per_year > 0 else 1.0
+    store.record_trial(result.symbol, result.strategy, result.params, result.interval,
+                       result.dates[0], result.dates[-1], len(result.equity),
+                       (result.metrics.get("sharpe") or 0.0) / scale,
+                       result.metrics.get("total_return") or 0.0)
 
 
 def cost_sensitivity(bars: list[Bar], strategy: str, params: dict | None = None, *, symbol: str = "",

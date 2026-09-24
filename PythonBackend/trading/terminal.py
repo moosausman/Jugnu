@@ -544,6 +544,7 @@ class Terminal:
                 ("stats STRAT SYM", "probabilistic Sharpe, bootstrap CI, track record"),
                 ("pbo STRAT SYM", "probability the sweep overfitted"),
                 ("dsr STRAT SYM", "Sharpe after paying for the search"),
+                ("search [SYM]", "every trial you've ever run, and the bar it set"),
                 ("cv STRAT SYM", "purged, embargoed cross-validation"),
                 ("factor STRAT SYM", "alpha vs market, size, value, momentum"),
                 ("cap STRAT SYM", "how much money before impact eats it"),
@@ -993,47 +994,120 @@ class Terminal:
         self.job(f"pbo {strategy} {symbol}", work)
 
     def cmd_dsr(self, args: list[str]) -> None:
-        """`dsr` -- the Sharpe after paying for the search that found it."""
+        """`dsr` -- the Sharpe after paying for every search that found it."""
         strategy, symbol, start, params = self._parse_run(args)
 
         def work(entry):
             from . import quant
             bars = load(symbol, start=start or None)
             grid = analysis.sweep_returns(bars, strategy, symbol=symbol)
-            trials = grid["configurations"]
-            sharpes = [quant.sharpe([row[c] for row in grid["matrix"]]) for c in range(trials)]
-            spread = quant.moments(sharpes)
+            here = grid["configurations"]
+            sharpes = [quant.sharpe([row[c] for row in grid["matrix"]]) for c in range(here)]
+            best = max(sharpes)
             result = analysis.backtest(bars, strategy, params, symbol=symbol)
             self.session.last_result = result
             rets = self._daily_returns(result)
             m = quant.moments(rets)
-            sr = m["mean"] / m["sd"] if m["sd"] > 0 else 0.0
-            best = max(sharpes)
             per_year = data.periods_per_year(symbol, "1d")
+
+            # The whole ledger for this symbol, not just the sweep on screen.
+            history = store.search_history(symbol)
+            pooled = history["sharpes"] or sharpes
+            trials = max(history["trials"], here)
+            spread = quant.moments(pooled)
             report = quant.deflated_sharpe(best, m["n"], m["skew"], m["kurtosis"],
                                            trials, spread["sd"] ** 2)
+            narrow = quant.deflated_sharpe(best, m["n"], m["skew"], m["kurtosis"],
+                                           here, quant.moments(sharpes)["sd"] ** 2)
+
             self.rule(f"{symbol}  {strategy}  deflated sharpe")
             self.stats([
                 ("best found", f"{INK}{quant.annualise(best, per_year):.2f}{RESET}"),
                 ("luck's best", f"{INK}{quant.annualise(report['hurdle'], per_year):.2f}{RESET}"),
-                ("trials", f"{INK}{trials}{RESET}"),
+                ("trials, all", f"{INK}{trials:,}{RESET}"),
                 ("P(real)", _odds(report["deflated"])),
             ])
             self.write("")
-            self.para(f"Across {trials} parameter sets the Sharpes varied by {spread['sd']:.4f} per bar. "
-                      f"{trials} worthless strategies with that much spread would produce a best of "
-                      f"{quant.annualise(report['hurdle'], per_year):.2f} by luck alone. That is the bar, "
-                      "and it is why a sweep's winner is not the same evidence as a single run's.")
+            self.para(f"Charged against every configuration ever tested on {symbol} "
+                      f"({trials:,} of them, across {', '.join(history['strategies']) or strategy}), "
+                      f"not just the {here} in this sweep. That many worthless strategies, varying by "
+                      f"{spread['sd']:.4f} per bar, would throw up a best of "
+                      f"{quant.annualise(report['hurdle'], per_year):.2f} on luck alone.")
+            if trials > here:
+                self.write(f"{ui.GUTTER}{FAINT}this sweep alone would have said "
+                           f"{narrow['deflated'] * 100:.0f}%{RESET}")
             if report["deflated"] < 0.5:
-                self.para("The best configuration does not clear it. On this evidence the sweep found "
-                          "noise.", colour=RED)
+                self.para("It does not clear the bar. On this evidence the search found noise.",
+                          colour=RED)
             elif report["deflated"] < 0.95:
-                self.para("It clears the bar, but not comfortably. Treat it as a hypothesis.", colour=AMBER)
+                self.para("It clears the bar, but not comfortably. A hypothesis, not a finding.",
+                          colour=AMBER)
             else:
-                self.para("It clears the bar. Rare -- check `pbo` and `cap` before believing it.",
-                          colour=GREEN)
-            self.para(f"Your own run scored {quant.annualise(sr, per_year):.2f}.", colour=FAINT)
+                self.para("It clears the bar. Check `pbo` and `cap` before believing it.", colour=GREEN)
+            self.para("`search` shows the ledger this is charged against.", colour=FAINT)
         self.job(f"dsr {strategy} {symbol}", work)
+
+    def cmd_search(self, args: list[str]) -> None:
+        """`search [SYM]` -- how hard you have looked, and what it now costs."""
+        symbol = (args[0].upper() if args else self.session.symbol).upper()
+        strategy = args[1] if len(args) > 1 else ""
+
+        def work(entry):
+            from . import quant
+            history = store.search_history(symbol, strategy)
+            self.rule(f"{symbol}  search history")
+            if not history["trials"]:
+                self.write(f"{ui.GUTTER}{DIM}Nothing tested on {symbol} yet. "
+                           f"The first backtest is the cheapest one you will ever run.{RESET}")
+                return
+            spread = quant.moments(history["sharpes"])
+            per_year = data.periods_per_year(symbol, "1d")
+            bars = 2000
+            try:
+                bars = max(250, len(load(symbol)))
+            except DataError:
+                pass
+            needed = quant.required_sharpe(history["trials"], spread["sd"] ** 2, bars)
+            best = max(history["sharpes"]) if history["sharpes"] else 0.0
+            since = time.time() - (history["first"] or time.time())
+            self.stats([
+                ("trials", f"{INK}{history['trials']:,}{RESET}"),
+                ("strategies", f"{INK}{len(history['strategies'])}{RESET}"),
+                ("searching for", f"{INK}{since / 86400:.0f}d{RESET}"),
+                ("best so far", f"{INK}{quant.annualise(best, per_year):.2f}{RESET}"),
+                ("now need", ui.tint(quant.annualise(needed, per_year) - quant.annualise(best, per_year),
+                                     f"{quant.annualise(needed, per_year):.2f}")),
+            ])
+            self.write("")
+            # What each extra decade of searching costs you.
+            self.write(f"{ui.GUTTER}{FAINT}the bar, by how far you search{RESET}")
+            for count in (1, 10, 100, 1000, 10000):
+                mark = f"{CLAY}<- you are here{RESET}" if count <= history["trials"] < count * 10 else ""
+                bar = quant.annualise(quant.required_sharpe(count, spread["sd"] ** 2, bars), per_year)
+                self.write(f"{ui.GUTTER}{DIM}{count:>6,} trials{RESET}  {INK}{bar:>5.2f}{RESET} {mark}")
+            self.write("")
+            self.para(f"Every backtest is a lottery ticket, and {symbol} has had {history['trials']:,} of "
+                      "them. The deflated Sharpe charges for all of them, which is why the bar above "
+                      "rises as you hunt -- searching harder does not find edges, it finds survivors.")
+            if quant.annualise(best, per_year) < quant.annualise(needed, per_year):
+                self.para(f"Nothing you have found on {symbol} clears its own search cost. The honest "
+                          "move is a different instrument or a hypothesis written down first, not "
+                          "another grid.", colour=AMBER)
+            else:
+                self.para("Your best result still clears the bar. Rare, and worth `pbo` before "
+                          "believing.", colour=GREEN)
+            self.para("`forget` clears the ledger -- only honest when the data changed, not when "
+                      "the number disappointed.", colour=FAINT)
+        self.job(f"search {symbol}", work)
+
+    def cmd_forget(self, args: list[str]) -> None:
+        """`forget [SYM]` -- clear the search ledger."""
+        symbol = args[0].upper() if args else ""
+        removed = store.forget_trials(symbol)
+        where = symbol or "everything"
+        self.write(f"{ui.GUTTER}{DIM}Cleared {removed:,} trials for {where}.{RESET}")
+        self.para("The deflation is only as honest as this ledger. Clearing it because a number "
+                  "was disappointing is how people talk themselves into noise.", colour=FAINT)
 
     def cmd_factor(self, args: list[str]) -> None:
         """`factor` -- how much of the return is just exposure."""
@@ -2049,6 +2123,8 @@ COMMANDS = {
     "stats": Terminal.cmd_stats, "real": Terminal.cmd_stats,
     "pbo": Terminal.cmd_pbo, "overfit": Terminal.cmd_pbo,
     "dsr": Terminal.cmd_dsr, "deflated": Terminal.cmd_dsr,
+    "search": Terminal.cmd_search, "budget": Terminal.cmd_search,
+    "forget": Terminal.cmd_forget,
     "factor": Terminal.cmd_factor, "alpha": Terminal.cmd_factor,
     "cap": Terminal.cmd_capacity, "capacity": Terminal.cmd_capacity,
     "alloc": Terminal.cmd_allocate, "hrp": Terminal.cmd_allocate,

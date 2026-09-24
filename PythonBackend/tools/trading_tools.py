@@ -340,18 +340,29 @@ def stress_test_strategy(symbol: str, strategy: str = "sma", start: str = "",
             if "deflated" in wanted:
                 sharpes = [quant.sharpe([row[c] for row in grid["matrix"]])
                            for c in range(grid["configurations"])]
-                spread = quant.moments(sharpes)
+                # Charge for every configuration ever tested on this symbol,
+                # not just this sweep's. The trial count that matters is the
+                # whole search, and the ledger has been keeping it.
+                history = store.search_history(symbol)
+                pooled = history["sharpes"] or sharpes
+                trials = max(history["trials"], grid["configurations"])
+                spread = quant.moments(pooled)
                 report = quant.deflated_sharpe(max(sharpes), moments["n"], moments["skew"],
-                                               moments["kurtosis"], grid["configurations"],
-                                               spread["sd"] ** 2)
+                                               moments["kurtosis"], trials, spread["sd"] ** 2)
                 out["deflated"] = {"p_real": round(report["deflated"], 3),
                                    "trials": report["trials"],
+                                   "trials_this_sweep": grid["configurations"],
+                                   "strategies_tried": history["strategies"],
+                                   "sharpe_needed_annual": round(quant.annualise(
+                                       quant.required_sharpe(trials, spread["sd"] ** 2, moments["n"],
+                                                             moments["skew"], moments["kurtosis"]),
+                                       per_year), 2),
                                    "luck_hurdle_annual": round(
                                        quant.annualise(report["hurdle"], per_year), 2)}
                 if report["deflated"] < 0.5:
                     out["verdict"].append(
                         "The best parameter set does not beat what luck would produce from "
-                        f"{report['trials']} tries.")
+                        f"{report['trials']} tries across this instrument's whole search history.")
 
     if "factor" in wanted:
         attribution = factors.attribute(result.dates[1:], rets, start=start or None)

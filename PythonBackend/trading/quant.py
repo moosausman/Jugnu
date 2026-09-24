@@ -224,6 +224,27 @@ def deflated_sharpe(sr: float, n: int, skew: float, kurtosis: float,
             "hurdle": bar, "sharpe": sr, "trials": trials, "n": n}
 
 
+def required_sharpe(trials: int, sr_variance: float, n: int, skew: float = 0.0,
+                    kurtosis: float = 3.0, confidence: float = 0.95) -> float:
+    """The per-period Sharpe you now need for the deflated Sharpe to clear
+    `confidence`, given how many strategies you have already tried.
+
+    This is deflated_sharpe() read backwards, and it is the number worth
+    watching: it rises every time you test something else, so it tells you
+    what the search has already cost you before you run the next one.
+    """
+    hurdle = expected_max_sharpe(trials, sr_variance)
+    low, high = hurdle, hurdle + 5.0
+    # The odds rise with the Sharpe, so bisection is safe.
+    for _ in range(80):
+        middle = (low + high) / 2.0
+        if probabilistic_sharpe(middle, n, skew, kurtosis, benchmark=hurdle) < confidence:
+            low = middle
+        else:
+            high = middle
+    return high
+
+
 def min_track_record(sr: float, n: int, skew: float, kurtosis: float,
                      target: float = 0.0, confidence: float = 0.95) -> float:
     """How many observations you'd need for this Sharpe to beat `target` at

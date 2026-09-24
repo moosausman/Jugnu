@@ -132,6 +132,79 @@ class OverfittingTests(unittest.TestCase):
         self.assertGreater(out["p_value"], 0.05)
 
 
+class SearchLedgerTests(unittest.TestCase):
+    """The trial count that makes deflation honest across a whole project."""
+
+    def setUp(self):
+        from trading import store
+        store.forget_trials()
+
+    def record(self, **over):
+        from trading import store
+        row = {"symbol": "AAPL", "strategy": "sma", "params": {"fast": 20},
+               "interval": "1d", "start": "2015-01-02", "end": "2020-01-02",
+               "bars": 1000, "sharpe": 0.04, "total_return": 1.2}
+        row.update(over)
+        store.record_trial(**row)
+
+    def test_the_same_test_twice_is_one_trial(self):
+        """Re-running a backtest teaches you nothing new, so it cannot cost
+        you significance a second time."""
+        from trading import store
+        self.record()
+        self.record()
+        self.record()
+        self.assertEqual(store.search_history("AAPL")["trials"], 1)
+
+    def test_a_different_parameter_window_or_symbol_is_a_new_trial(self):
+        from trading import store
+        self.record()
+        self.record(params={"fast": 30})
+        self.record(end="2021-01-02")
+        self.record(symbol="MSFT")
+        self.assertEqual(store.search_history("AAPL")["trials"], 3)
+        self.assertEqual(store.search_history("MSFT")["trials"], 1)
+        self.assertEqual(store.search_history()["trials"], 4)
+
+    def test_history_scopes_to_a_strategy_when_asked(self):
+        from trading import store
+        self.record()
+        self.record(strategy="rsi", params={"length": 14})
+        self.assertEqual(store.search_history("AAPL")["trials"], 2)
+        self.assertEqual(store.search_history("AAPL", "rsi")["trials"], 1)
+        self.assertEqual(store.search_history("AAPL")["strategies"], ["rsi", "sma"])
+
+    def test_running_a_backtest_writes_to_the_ledger(self):
+        from trading import store
+        from trading.analysis import backtest
+        from trading.data import Bar
+        bars = [Bar(ts=1_600_000_000 + i * 86400, open=100 + i, high=101 + i,
+                    low=99 + i, close=100 + i, volume=1e6) for i in range(200)]
+        backtest(bars, "sma", {"fast": 5, "slow": 20}, symbol="TEST")
+        self.assertEqual(store.search_history("TEST")["trials"], 1)
+
+    def test_forget_is_scoped(self):
+        from trading import store
+        self.record()
+        self.record(symbol="MSFT")
+        store.forget_trials("AAPL")
+        self.assertEqual(store.search_history("AAPL")["trials"], 0)
+        self.assertEqual(store.search_history("MSFT")["trials"], 1)
+
+    def test_the_bar_rises_as_you_search(self):
+        bars = [quant.required_sharpe(n, 0.002, 2000) for n in (1, 10, 100, 1000)]
+        self.assertEqual(bars, sorted(bars))
+
+    def test_required_sharpe_inverts_the_deflated_sharpe(self):
+        """The two have to agree, or the number shown as "the bar" is not
+        the bar the verdict is using."""
+        for trials in (5, 50, 500):
+            need = quant.required_sharpe(trials, 0.002, 1500, confidence=0.95)
+            self.assertAlmostEqual(
+                quant.deflated_sharpe(need, 1500, 0.0, 3.0, trials, 0.002)["deflated"],
+                0.95, places=3, msg=f"trials={trials}")
+
+
 class RegressionTests(unittest.TestCase):
     def test_inverse_is_a_real_inverse(self):
         matrix = [[4.0, 1.2, 0.3], [1.2, 3.0, 0.7], [0.3, 0.7, 2.5]]
