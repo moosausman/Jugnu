@@ -86,7 +86,11 @@ def backtest_strategy(symbol: str, strategy: str = "sma", start: str = "", end: 
     strategy="hold" to compare -- that answer is already in the first one.
 
     Args:
-        symbol: Ticker, e.g. AAPL, RY.TO (Toronto), BTC-USD.
+        symbol: Ticker. Anything Yahoo lists: US ("AAPL"), an exchange
+            suffix for elsewhere ("SHOP.TO" Toronto, "BP.L" London,
+            "SAP.DE" Frankfurt, "7203.T" Tokyo, "RELIANCE.NS" India), an
+            index ("^GSPC"), a future ("GC=F" gold, "CL=F" crude), FX
+            ("EURUSD=X"), or crypto ("BTC-USD"). There is no fixed list.
         strategy: Which strategy to run:
             "sma" -- moving-average crossover (a "20/100 crossover" is
                 sma with params "fast=20 slow=100"),
@@ -149,7 +153,11 @@ def sweep_strategy(symbol: str, strategy: str = "sma", start: str = "", end: str
     is probably curve-fitted noise.
 
     Args:
-        symbol: Ticker, e.g. AAPL or BTC-USD.
+        symbol: Ticker. Anything Yahoo lists: US ("AAPL"), an exchange
+            suffix for elsewhere ("SHOP.TO" Toronto, "BP.L" London,
+            "SAP.DE" Frankfurt, "7203.T" Tokyo, "RELIANCE.NS" India), an
+            index ("^GSPC"), a future ("GC=F" gold, "CL=F" crude), FX
+            ("EURUSD=X"), or crypto ("BTC-USD"). There is no fixed list.
         strategy: Strategy name with parameters to sweep (sma, rsi, breakout).
         start: Optional first day, YYYY-MM-DD.
         end: Optional last day, YYYY-MM-DD.
@@ -188,7 +196,11 @@ def walk_forward_test(symbol: str, strategy: str = "sma", start: str = "", end: 
     the strategy did on data its parameters never saw.
 
     Args:
-        symbol: Ticker, e.g. AAPL or BTC-USD.
+        symbol: Ticker. Anything Yahoo lists: US ("AAPL"), an exchange
+            suffix for elsewhere ("SHOP.TO" Toronto, "BP.L" London,
+            "SAP.DE" Frankfurt, "7203.T" Tokyo, "RELIANCE.NS" India), an
+            index ("^GSPC"), a future ("GC=F" gold, "CL=F" crude), FX
+            ("EURUSD=X"), or crypto ("BTC-USD"). There is no fixed list.
         strategy: Strategy name (sma, rsi, breakout).
         start: Optional first day, YYYY-MM-DD.
         end: Optional last day, YYYY-MM-DD.
@@ -222,7 +234,7 @@ def paper_trade(action: str = "status", symbol: str = "", strategy: str = "sma",
 
     Args:
         action: start, status, step (bring up to date) or stop.
-        symbol: Ticker, for action=start.
+        symbol: Ticker, for action=start. Any market Yahoo lists.
         strategy: Strategy name, for action=start.
         params: Optional parameters, e.g. "fast=20 slow=100".
         account_id: Which paper account, for status/step/stop. Omit for all.
@@ -278,7 +290,11 @@ def stress_test_strategy(symbol: str, strategy: str = "sma", start: str = "",
     ever describing a backtest as promising.
 
     Args:
-        symbol: Ticker, e.g. "AAPL" or "BTC-USD".
+        symbol: Ticker. Anything Yahoo lists: US ("AAPL"), an exchange
+            suffix for elsewhere ("SHOP.TO" Toronto, "BP.L" London,
+            "SAP.DE" Frankfurt, "7203.T" Tokyo, "RELIANCE.NS" India), an
+            index ("^GSPC"), a future ("GC=F" gold, "CL=F" crude), FX
+            ("EURUSD=X"), or crypto ("BTC-USD"). There is no fixed list.
         strategy: Strategy name; `list_strategies` has them.
         start: Optional start date, e.g. "2015-01-01".
         checks: "all", or a comma-separated subset of
@@ -424,7 +440,11 @@ def execution_cost(symbol: str, quantity: float, side: str = "buy",
     which is stress_test_strategy.
 
     Args:
-        symbol: Ticker, e.g. "AAPL".
+        symbol: Ticker. Anything Yahoo lists: US ("AAPL"), an exchange
+            suffix for elsewhere ("SHOP.TO" Toronto, "BP.L" London,
+            "SAP.DE" Frankfurt, "7203.T" Tokyo, "RELIANCE.NS" India), an
+            index ("^GSPC"), a future ("GC=F" gold, "CL=F" crude), FX
+            ("EURUSD=X"), or crypto ("BTC-USD"). There is no fixed list.
         quantity: Shares to trade.
         side: "buy" or "sell".
         interval: Bar size for the window -- "1m", "5m", "1h", "1d".
@@ -569,7 +589,8 @@ def compare_allocations(symbols: list, start: str = "") -> dict:
     they survive out of sample where mean-variance optimisation does not.
 
     Args:
-        symbols: Tickers, e.g. ["SPY", "QQQ", "TLT", "GLD"]. Two to twelve.
+        symbols: Tickers, two to twelve, e.g. ["SPY", "QQQ", "TLT", "GLD"].
+            Any market Yahoo lists, mixed freely.
         start: Optional start date.
     """
     from trading import allocate
