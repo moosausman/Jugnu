@@ -16,6 +16,7 @@ from .trading_tools import (
     backtest_strategy,
     open_trading_terminal,
     stress_test_strategy,
+    execution_cost,
     compare_allocations,
     run_in_trading_terminal,
     list_strategies,
@@ -2734,6 +2735,7 @@ _tool_functions = [
     past_backtests,
     open_trading_terminal,
     stress_test_strategy,
+    execution_cost,
     compare_allocations,
     run_in_trading_terminal,
 ]

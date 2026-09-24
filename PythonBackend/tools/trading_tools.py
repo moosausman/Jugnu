@@ -399,6 +399,74 @@ def stress_test_strategy(symbol: str, strategy: str = "sma", start: str = "",
     return out
 
 
+def execution_cost(symbol: str, quantity: float, side: str = "buy",
+                   interval: str = "5m", bars: int = 40) -> dict:
+    """What it would actually cost to get an order done, by trading it
+    through a simulated limit order book.
+
+    Six ways to work the same order -- market (cross now), twap, vwap, pov
+    (take a share of volume), passive (rest at the touch), limit (rest at a
+    price) -- each reported with how much it filled and what it cost.
+
+    The cost is implementation shortfall against the arrival price, and it
+    charges the shares that did NOT trade at where the price finished.
+    Without that, an order that never fills looks free and wins every
+    comparison. `spread_paid_bps` is what crossing cost: negative means the
+    order was paid for providing liquidity.
+
+    The book and the matching are genuine -- price-time priority, queue
+    position, partial fills. The order flow is reconstructed from OHLCV
+    bars rather than tick data, so the ranking and the rough magnitude are
+    meaningful and the third decimal is not.
+
+    Use this when asked what a trade would cost, whether an order is too
+    big, or how to work one -- not for whether a strategy is any good,
+    which is stress_test_strategy.
+
+    Args:
+        symbol: Ticker, e.g. "AAPL".
+        quantity: Shares to trade.
+        side: "buy" or "sell".
+        interval: Bar size for the window -- "1m", "5m", "1h", "1d".
+        bars: How many bars to work the order across.
+    """
+    from trading import execution
+
+    symbol = (symbol or "").upper().strip()
+    side = (side or "buy").lower().strip()
+    if side not in ("buy", "sell"):
+        return _fail('side must be "buy" or "sell".')
+    try:
+        quantity = float(quantity)
+    except (TypeError, ValueError):
+        return _fail("quantity must be a number of shares.")
+    if quantity <= 0:
+        return _fail("quantity must be positive.")
+    try:
+        window = load(symbol, interval)[-max(2, min(int(bars), 200)):]
+    except (DataError, ValueError) as e:
+        return _fail(str(e))
+    if len(window) < 2:
+        return _fail(f"Not enough {interval} history for {symbol}.")
+
+    report = execution.compare(window, side, quantity)
+    traded = sum(b.volume for b in window)
+    algos = {}
+    for name, info in report["algos"].items():
+        algos[name] = {"fill_rate": info["fill_rate"],
+                       "average_price": info["average_price"],
+                       "cost_bps": info["total_shortfall_bps"],
+                       "spread_paid_bps": info["spread_paid_bps"],
+                       "maker_share": info["maker_share"],
+                       "fills": info["fills"]}
+    cheapest = min(algos, key=lambda k: algos[k]["cost_bps"])
+    return {"ok": True, "symbol": symbol, "side": side, "quantity": quantity,
+            "window": f"{len(window)}x{interval}", "window_volume": round(traded),
+            "participation": round(quantity / traded, 6) if traded else None,
+            "algos": algos, "cheapest": cheapest,
+            "notes": execution.verdict(report)}
+
+
 def compare_allocations(symbols: list, start: str = "") -> dict:
     """Weight a basket three ways and report what each does to portfolio risk.
 

@@ -548,6 +548,7 @@ class Terminal:
                 ("cv STRAT SYM", "purged, embargoed cross-validation"),
                 ("factor STRAT SYM", "alpha vs market, size, value, momentum"),
                 ("cap STRAT SYM", "how much money before impact eats it"),
+                ("exec SYM 50000 buy", "six execution algos through a real order book"),
                 ("alloc SYM SYM…", "equal vs inverse-variance vs HRP"),
             ]),
             ("paper", [
@@ -1248,6 +1249,56 @@ class Terminal:
                 self.para("At least one fold loses money. A strategy that only works in some regimes "
                           "is a regime bet wearing a strategy's clothes.", colour=AMBER)
         self.job(f"cv {strategy} {symbol}", work)
+
+    def cmd_execute(self, args: list[str]) -> None:
+        """`exec SYM [qty] [buy|sell] [interval]` -- six ways to work an order
+        through a real matching engine, and what each one costs."""
+        symbol = (args[0].upper() if args else self.session.symbol).upper()
+        quantity = float(args[1]) if len(args) > 1 else 50_000.0
+        side = args[2].lower() if len(args) > 2 and args[2].lower() in ("buy", "sell") else "buy"
+        interval = args[3] if len(args) > 3 else "5m"
+
+        def work(entry):
+            from . import execution
+            bars = load(symbol, interval)[-40:]
+            if len(bars) < 5:
+                self.write(f"{ui.GUTTER}{RED}Not enough {interval} bars for {symbol}.{RESET}")
+                return
+            volume = sum(b.volume for b in bars)
+            report = execution.compare(bars, side, quantity)
+            self.rule(f"{symbol}  {side} {quantity:,.0f}  execution")
+            self.stats([
+                ("window", f"{INK}{len(bars)}×{interval}{RESET}"),
+                ("traded", f"{INK}{ui.money(volume)}{RESET}"),
+                ("your share", f"{INK}{quantity / volume * 100:.2f}%{RESET}"),
+                ("arrival", f"{INK}{report['algos']['market']['arrival']:.2f}{RESET}"),
+            ])
+            self.write("")
+            rows = []
+            for name, info in report["algos"].items():
+                total = info["total_shortfall_bps"]
+                rows.append([
+                    name,
+                    f"{info['fill_rate'] * 100:.0f}%",
+                    "—" if info["average_price"] is None else f"{info['average_price']:.3f}",
+                    "—" if info["spread_paid_bps"] is None else f"{info['spread_paid_bps']:+.1f}",
+                    ui.tint(-total, f"{total:+.1f}"),
+                    "—" if info["maker_share"] is None else f"{info['maker_share'] * 100:.0f}%",
+                    str(info["fills"]),
+                ])
+            self.table(["algo", "filled", "avg px", "spread", "cost bps", "maker", "fills"],
+                       rows, aligns="<>>>>>>")
+            self.write("")
+            for line in execution.verdict(report):
+                self.para(line)
+            self.para("`cost bps` is implementation shortfall against the arrival mid, and it charges "
+                      "the shares you did NOT trade at where the price finished -- otherwise never "
+                      "trading would win every time. `spread` is what crossing cost: negative means "
+                      "you were paid to provide liquidity.", colour=FAINT)
+            self.para("The book and the matching are real -- price-time priority, queue position, "
+                      "partial fills. The order flow is reconstructed from bars, not tick data, so "
+                      "trust the ranking and the rough size, not the third decimal.", colour=FAINT)
+        self.job(f"exec {symbol} {quantity:,.0f}", work)
 
     def cmd_montecarlo(self, args: list[str]) -> None:
         strategy, symbol, start, params = self._parse_run(args)
@@ -2129,6 +2180,7 @@ COMMANDS = {
     "cap": Terminal.cmd_capacity, "capacity": Terminal.cmd_capacity,
     "alloc": Terminal.cmd_allocate, "hrp": Terminal.cmd_allocate,
     "cv": Terminal.cmd_purged, "purged": Terminal.cmd_purged,
+    "exec": Terminal.cmd_execute, "fills": Terminal.cmd_execute,
     "replay": Terminal.cmd_replay,
     "trades": Terminal.cmd_trades,
     "runs": Terminal.cmd_runs,

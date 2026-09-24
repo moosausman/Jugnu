@@ -307,7 +307,7 @@ AGENTS = {
         autonomous_safe=True,   # public prices in, arithmetic out
         tool_names=[
             "list_strategies", "backtest_strategy", "sweep_strategy",
-            "walk_forward_test", "stress_test_strategy", "compare_allocations", "paper_trade", "past_backtests",
+            "walk_forward_test", "stress_test_strategy", "compare_allocations", "execution_cost", "paper_trade", "past_backtests",
         ],
     ),
     "temp_email": Agent(
@@ -469,7 +469,7 @@ _AUTONOMOUS_SAFE_TOOLS = frozenset({
     "geocode_location", "get_weather",
     "wikipedia_search", "wikipedia_summary",
     "nominatim_geocode", "nominatim_reverse_geocode",
-    "list_strategies", "backtest_strategy", "sweep_strategy", "walk_forward_test", "stress_test_strategy", "compare_allocations",
+    "list_strategies", "backtest_strategy", "sweep_strategy", "walk_forward_test", "stress_test_strategy", "compare_allocations", "execution_cost",
     "paper_trade", "past_backtests",
 })
 

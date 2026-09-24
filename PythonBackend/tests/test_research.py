@@ -326,5 +326,158 @@ class ImpactTests(unittest.TestCase):
         self.assertLess(capacity.average_dollar_volume(bars), 200_000)
 
 
+class OrderBookTests(unittest.TestCase):
+    """A matching engine that gets priority wrong is worse than no engine:
+    every execution number downstream would be quietly fictional."""
+
+    def book(self):
+        from trading.book import Book
+        return Book(tick=0.01)
+
+    def test_price_time_priority(self):
+        from trading.book import BUY, SELL, Order
+        book = self.book()
+        for name, qty in (("A", 100), ("B", 200), ("C", 300)):
+            book.submit(Order(SELL, qty, 10.01, owner=name))
+        fills = [f for f in book.submit(Order(BUY, 250, 10.01, owner="taker"))
+                 if f.role == "maker"]
+        self.assertEqual([(f.owner, f.qty) for f in fills], [("A", 100.0), ("B", 150.0)])
+
+    def test_the_queue_moves_up_as_it_is_filled(self):
+        from trading.book import BUY, SELL, Order
+        book = self.book()
+        for qty in (100, 200, 300):
+            book.submit(Order(SELL, qty, 10.01))
+        book.submit(Order(BUY, 250, 10.01))
+        ahead = [o.queue_ahead for o in book.asks[book.to_ticks(10.01)].orders]
+        self.assertEqual(ahead, [0.0, 50.0])      # B is now at the front, C behind its remainder
+
+    def test_a_market_order_walks_the_levels(self):
+        from trading.book import BUY, SELL, Order
+        book = self.book()
+        for price in (10.00, 10.02, 10.05):
+            book.submit(Order(SELL, 100, price))
+        taker = Order(BUY, 250, None, owner="mine")
+        fills = [f for f in book.submit(taker) if f.role == "taker"]
+        self.assertEqual([(f.price, f.qty) for f in fills],
+                         [(10.00, 100.0), (10.02, 100.0), (10.05, 50.0)])
+        self.assertEqual(taker.filled, 250.0)
+
+    def test_ioc_takes_what_it_can_and_does_not_rest(self):
+        from trading.book import BUY, SELL, Order
+        book = self.book()
+        book.submit(Order(SELL, 50, 10.00))
+        order = Order(BUY, 200, 10.00, tif="IOC")
+        book.submit(order)
+        self.assertEqual(order.filled, 50.0)
+        self.assertEqual(book.depth(BUY), [])
+
+    def test_fill_or_kill_is_all_or_nothing(self):
+        from trading.book import BUY, SELL, Order
+        book = self.book()
+        book.submit(Order(SELL, 50, 10.00))
+        order = Order(BUY, 200, 10.00, tif="FOK")
+        book.submit(order)
+        self.assertEqual(order.filled, 0.0)
+        book.submit(Order(SELL, 500, 10.00))
+        ok = Order(BUY, 200, 10.00, tif="FOK")
+        book.submit(ok)
+        self.assertEqual(ok.filled, 200.0)
+
+    def test_the_book_never_crosses(self):
+        from trading.book import BUY, SELL, Order
+        rng = random.Random(0)
+        book = self.book()
+        for _ in range(3000):
+            book.submit(Order(rng.choice([BUY, SELL]), rng.randint(1, 100),
+                              round(10 + rng.gauss(0, 0.05), 2) if rng.random() < 0.85 else None,
+                              tif=rng.choice(["GTC", "GTC", "IOC"])))
+            if book.best_bid is not None and book.best_ask is not None:
+                self.assertLess(book.best_bid, book.best_ask)
+
+    def test_cancel_removes_it_from_the_queue(self):
+        from trading.book import BUY, SELL, Order
+        book = self.book()
+        mine = Order(SELL, 100, 10.01, owner="mine")
+        book.submit(mine)
+        book.submit(Order(SELL, 100, 10.01, owner="other"))
+        self.assertTrue(book.cancel(mine.id))
+        fills = [f for f in book.submit(Order(BUY, 100, 10.01)) if f.role == "maker"]
+        self.assertEqual([f.owner for f in fills], ["other"])
+
+
+class ExecutionTests(unittest.TestCase):
+    def bars(self, drift=0.0, n=20):
+        """Synthetic minute bars, optionally trending."""
+        from trading.data import Bar
+        out, price = [], 100.0
+        for i in range(n):
+            close = price * (1 + drift)
+            out.append(Bar(ts=1_600_000_000 + i * 60, open=price,
+                           high=max(price, close) * 1.001, low=min(price, close) * 0.999,
+                           close=close, volume=100_000))
+            price = close
+        return out
+
+    def test_crossing_the_spread_costs_more_than_resting(self):
+        from trading import execution
+        bars = self.bars()
+        crossed = execution.execute(bars, "buy", 20_000, "market")
+        rested = execution.execute(bars, "buy", 20_000, "passive")
+        self.assertGreater(crossed["spread_paid_bps"], rested["spread_paid_bps"],
+                           "a taker pays the spread; a maker is paid it")
+        self.assertLessEqual(rested["spread_paid_bps"], 0.0)
+
+    def test_a_bigger_sweep_gets_a_worse_price(self):
+        """Measured inside ONE bar. Over many bars a large order is worked
+        through a price that wanders back, which is a fact about the market
+        rather than about the order; walking the book is the part that is
+        always true."""
+        from trading import execution
+        one = self.bars(n=1)
+        small = execution.execute(one, "buy", 5_000, "market")
+        large = execution.execute(one, "buy", 120_000, "market")
+        self.assertGreater(large["average_price"], small["average_price"])
+        self.assertGreater(large["spread_paid_bps"], small["spread_paid_bps"])
+
+    def test_not_trading_is_charged_for_in_a_trending_market(self):
+        """Without an opportunity cost, an order that never fills looks
+        free, and every comparison picks it."""
+        from trading import execution
+        rising = self.bars(drift=0.002)
+        patient = execution.execute(rising, "buy", 500_000, "limit", limit_price=99.0)
+        urgent = execution.execute(rising, "buy", 500_000, "market")
+        self.assertLess(patient["fill_rate"], 0.5)
+        self.assertGreater(patient["total_shortfall_bps"], urgent["total_shortfall_bps"],
+                           "missing a rising market must cost more than crossing into it")
+
+    def test_an_order_that_never_fills_reports_no_price(self):
+        from trading import execution
+        out = execution.execute(self.bars(), "buy", 1000, "limit", limit_price=1.0)
+        self.assertEqual(out["fill_rate"], 0.0)
+        self.assertIsNone(out["average_price"])
+        self.assertIsNone(out["shortfall_bps"])
+        self.assertIsNotNone(out["total_shortfall_bps"])   # not trading still has a cost
+
+    def test_passive_fills_are_made_by_resting(self):
+        from trading import execution
+        out = execution.execute(self.bars(), "buy", 20_000, "passive")
+        self.assertGreater(out["fill_rate"], 0.0)
+        self.assertAlmostEqual(out["maker_share"], 1.0, places=6)
+
+    def test_nothing_is_filled_beyond_what_was_asked(self):
+        from trading import execution
+        for algo in ("market", "twap", "vwap", "pov", "passive", "limit"):
+            out = execution.execute(self.bars(), "buy", 30_000, algo)
+            self.assertLessEqual(out["filled"], 30_000 + 1e-6, algo)
+
+    def test_the_same_seed_gives_the_same_execution(self):
+        from trading import execution
+        bars = self.bars()
+        a = execution.execute(bars, "buy", 50_000, "vwap", seed=3)
+        b = execution.execute(bars, "buy", 50_000, "vwap", seed=3)
+        self.assertEqual(a["average_price"], b["average_price"])
+
+
 if __name__ == "__main__":
     unittest.main()
