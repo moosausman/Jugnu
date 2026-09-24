@@ -48,6 +48,28 @@ def get_json(url: str, params: dict | None = None, headers: dict | None = None,
         raise HttpError(str(e)) from e
 
 
+def get_bytes(url: str, params: dict | None = None, headers: dict | None = None,
+              timeout: float = 120.0) -> bytes:
+    """A GET that returns raw bytes -- the bulk market-data archives are
+    zipped CSV, not JSON, and they are large enough to want a long timeout."""
+    headers = {"User-Agent": USER_AGENT, **(headers or {})}
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+    if _requests is not None:
+        try:
+            response = _requests.get(url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            return response.content
+        except Exception as e:                      # noqa: BLE001
+            raise HttpError(str(e)) from e
+    try:
+        request = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(request, timeout=timeout) as response:   # noqa: S310
+            return response.read()
+    except (urllib.error.URLError, ValueError, TimeoutError) as e:
+        raise HttpError(str(e)) from e
+
+
 def post_json(url: str, payload: dict, headers: dict | None = None, timeout: float = 30.0):
     headers = {"User-Agent": USER_AGENT, "Content-Type": "application/json", **(headers or {})}
     body = _json.dumps(payload).encode()

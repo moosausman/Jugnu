@@ -467,6 +467,98 @@ def execution_cost(symbol: str, quantity: float, side: str = "buy",
             "notes": execution.verdict(report)}
 
 
+def measure_microstructure(symbol: str = "BTCUSDT", date: str = "") -> dict:
+    """Measure a REAL order book and a REAL trade tape, and check the
+    simulator's assumptions against them.
+
+    Free and public for crypto only (Binance), so this takes BTCUSDT,
+    ETHUSDT, SOLUSDT and the like -- not AAPL. Equity depth and quote data
+    is licensed and this does not have it.
+
+    What comes back:
+        depth_exponent   how cumulative resting size grows with distance
+                         from the mid. 1.0 means constant density, 2.0
+                         means density growing with distance. Measured, it
+                         is about 0.7, so the book THINS and sweeping it is
+                         convex.
+        response         the average signed mid move L trades after a
+                         trade, with the slope across the measured lag
+                         range. The slope is about 0.5 across four decades,
+                         which is the square-root law in trade time -- but
+                         the curve is concave, so the slope depends on the
+                         range and is reported with it.
+        size_exponent    how a single trade's impact depends on its size.
+                         Measured: it does not, at all.
+
+    Use it when asked whether the cost model is realistic, what real market
+    impact looks like, or to justify a number the execution simulator gave.
+
+    Args:
+        symbol: A Binance pair -- "BTCUSDT", "ETHUSDT", "SOLUSDT".
+        date: Optional "YYYY-MM-DD" to pull a whole day from the bulk
+            archive, which is hundreds of thousands of trades. Without it
+            only the last thousand trades are used, which is a few minutes
+            and too short to measure the long lags.
+    """
+    from trading import execution, microdata
+
+    try:
+        book = microdata.depth(symbol, 5000)
+    except microdata.MicroError as e:
+        return _fail(str(e))
+    mid = book["mid"]
+    points, cumulative = [], 0.0
+    for price, qty in book["asks"]:
+        away = (price - mid) / mid * 10_000
+        cumulative += qty
+        if away > 0.5:
+            points.append((away, cumulative))
+    exponent = None
+    if len(points) > 20:
+        import math
+        xs = [math.log(d) for d, _ in points]
+        ys = [math.log(q) for _, q in points]
+        n = len(xs)
+        mx, my = sum(xs) / n, sum(ys) / n
+        bottom = sum((x - mx) ** 2 for x in xs)
+        exponent = sum((xs[i] - mx) * (ys[i] - my) for i in range(n)) / bottom if bottom else None
+
+    try:
+        tape = (microdata.day_trades(symbol, date, limit=300_000) if date
+                else microdata.trades(symbol, 1000))
+    except microdata.MicroError as e:
+        return {"ok": True, "symbol": symbol, "spread_bps": round(book["spread_bps"], 4),
+                "levels": len(book["asks"]), "depth_exponent": exponent,
+                "tape_error": str(e)}
+
+    curve = microdata.response(tape)
+    sized = microdata.impact_by_size(tape)
+    out = {"ok": True, "symbol": symbol, "trades": len(tape),
+           "spread_bps": round(book["spread_bps"], 4),
+           "levels": len(book["asks"]),
+           "book_reach_bps": round(points[-1][0], 1) if points else None,
+           "depth_exponent": round(exponent, 3) if exponent is not None else None,
+           "model_shape_exponent": execution.MEASURED_SHAPE}
+    if curve.get("ok"):
+        out["response"] = {
+            "slope": round(curve["gamma"], 3) if curve["gamma"] is not None else None,
+            "lag_range": curve["lag_range"],
+            "short_lag_slope": round(curve["near_slope"], 3) if curve["near_slope"] is not None else None,
+            "long_lag_slope": round(curve["far_slope"], 3) if curve["far_slope"] is not None else None,
+            "concave": curve["concave"],
+            "note": ("The curve is concave, so there is no single exponent: the slope falls as the "
+                     "lag grows. The 0.5 quoted as the square-root law is the chord across roughly "
+                     "four decades, not a power law at every scale."),
+        }
+        if len(tape) < 50_000:
+            out["response"]["warning"] = (
+                f"{len(tape):,} trades is a few minutes and cannot reach the long lags. "
+                "Pass a date to pull a full day.")
+    if sized.get("ok") and sized.get("exponent") is not None:
+        out["size_exponent"] = round(sized["exponent"], 3)
+    return out
+
+
 def compare_allocations(symbols: list, start: str = "") -> dict:
     """Weight a basket three ways and report what each does to portfolio risk.
 

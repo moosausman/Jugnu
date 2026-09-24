@@ -426,16 +426,19 @@ class ResilienceTests(unittest.TestCase):
             price = close
         return out
 
-    def test_the_book_deepens_away_from_the_touch(self):
-        """Latent liquidity grows with distance. A ladder that thins instead
-        makes deep sweeps explosive and gets the impact law wrong."""
+    def test_the_book_thins_away_from_the_touch(self):
+        """This assertion is the reverse of what it was, because the real
+        book was measured: cumulative depth on BTC, ETH and SOL scales as
+        distance**0.7, so density DECAYS. The ladder has to match, and the
+        square-root law then has to come from somewhere else -- from time,
+        which is what the propagator models."""
         from trading.book import SELL
-        from trading.execution import Session
+        from trading.execution import MEASURED_SHAPE, Session
+        self.assertLess(MEASURED_SHAPE, 0.0)
         session = Session()
         session._refresh(100.0, 100_000)
         sizes = [size for _, size in session.book.depth(SELL, levels=10)]
-        self.assertEqual(sizes, sorted(sizes), "depth must not shrink with distance")
-        self.assertGreater(sizes[-1], sizes[0] * 2)
+        self.assertEqual(sizes, sorted(sizes, reverse=True), "depth must thin with distance")
 
     def test_what_you_eat_leaves_a_hole(self):
         from trading.book import BUY, SELL, Order
@@ -458,14 +461,27 @@ class ResilienceTests(unittest.TestCase):
         self.assertEqual(depths, sorted(depths), "liquidity must come back, not stay gone")
         self.assertLess(session.hole[SELL], 1000.0)
 
-    def test_working_an_order_beats_sweeping_it(self):
-        """The entire reason execution algorithms exist. If a resilient book
-        did not reward patience, none of them would."""
+    def test_working_a_large_order_beats_sweeping_it(self):
+        """The entire reason execution algorithms exist -- and it has to be
+        measured on impact, with both versions actually completing. An order
+        that fills 4% at a lovely price has not been executed."""
         from trading import execution
         window = self.bars(n=20)
-        swept = execution.execute(window[:1], "buy", 400_000, "market")
-        worked = execution.execute(window, "buy", 400_000, "vwap")
-        self.assertGreater(swept["spread_paid_bps"], worked["spread_paid_bps"])
+        swept = execution.execute(window[:1], "buy", 4_000, "market")
+        worked = execution.execute(window, "buy", 4_000, "vwap")
+        self.assertGreater(swept["fill_rate"], 0.98)
+        self.assertGreater(worked["fill_rate"], 0.98)
+        self.assertGreater(swept["impact_bps"], worked["impact_bps"])
+
+    def test_a_small_order_should_just_cross(self):
+        """The other side of it, which a blanket rule would miss: below the
+        size that strains the book, spreading an order out costs MORE,
+        because every child fill kicks the price again."""
+        from trading import execution
+        window = self.bars(n=20)
+        swept = execution.execute(window[:1], "buy", 500, "market")
+        worked = execution.execute(window, "buy", 500, "vwap")
+        self.assertLess(swept["impact_bps"], worked["impact_bps"])
 
     def test_impact_scales_as_the_square_root(self):
         """Four times the size should cost about twice as much, not four
@@ -520,8 +536,12 @@ class ExecutionTests(unittest.TestCase):
         always true."""
         from trading import execution
         one = self.bars(n=1)
-        small = execution.execute(one, "buy", 5_000, "market")
-        large = execution.execute(one, "buy", 120_000, "market")
+        small = execution.execute(one, "buy", 500, "market")
+        large = execution.execute(one, "buy", 4_000, "market")
+        # Both have to complete, or this compares a filled order against an
+        # abandoned one and the cheaper number belongs to the failure.
+        self.assertGreater(small["fill_rate"], 0.98)
+        self.assertGreater(large["fill_rate"], 0.98)
         self.assertGreater(large["average_price"], small["average_price"])
         self.assertGreater(large["spread_paid_bps"], small["spread_paid_bps"])
 
@@ -562,6 +582,149 @@ class ExecutionTests(unittest.TestCase):
         a = execution.execute(bars, "buy", 50_000, "vwap", seed=3)
         b = execution.execute(bars, "buy", 50_000, "vwap", seed=3)
         self.assertEqual(a["average_price"], b["average_price"])
+
+
+class MicrostructureTests(unittest.TestCase):
+    """The measurement code, on tapes whose answer is known in advance.
+    Nothing here touches the network."""
+
+    def tape(self, n=4000, drift_per_trade=0.0, long_memory=True, seed=1):
+        """A synthetic tape with a known impact structure: each trade moves
+        the price by a fixed amount in its own direction.
+
+        Signs come in RUNS whose lengths are power-law distributed, because
+        that is what real order flow looks like -- large orders are chopped
+        into many children, so a buy is followed by a buy far more often
+        than not, and the correlation decays slowly rather than dying after
+        a few trades.
+
+        This matters for what the test can even assert. With independent
+        signs, R(L) is flat at every lag no matter how much impact each
+        trade has, because only the trade at lag zero correlates with its
+        own sign. The response function grows because order flow has
+        memory; without modelling that, there is nothing to detect.
+        """
+        rng = random.Random(seed)
+        out, price, sign, run = [], 100.0, 1, 0
+        for i in range(n):
+            if run <= 0:
+                sign = -sign
+                # Pareto-ish run lengths: mostly short, occasionally long.
+                run = int(1 + (rng.paretovariate(1.2) if long_memory else 1.0))
+            run -= 1
+            # The trade prints at the price BEFORE its own impact lands, so
+            # the move shows up in the following prints. Recording it after
+            # hides the very thing the response function measures.
+            out.append({"ts": 1_600_000_000_000 + i, "price": price,
+                        "qty": rng.lognormvariate(-4, 1.5), "sign": sign})
+            price *= (1 + sign * drift_per_trade + rng.gauss(0, 0.00002))
+        return out
+
+    def test_symbols_are_normalised_to_the_venue(self):
+        from trading.microdata import _symbol
+        for given in ("BTC-USD", "btc/usdt", "BTCUSDT", "btcusd"):
+            self.assertEqual(_symbol(given), "BTCUSDT", given)
+
+    def test_response_detects_impact_that_is_there(self):
+        from trading import microdata
+        out = microdata.response(self.tape(drift_per_trade=0.00001))
+        self.assertTrue(out["ok"])
+        self.assertGreater(out["gamma"], 0.0)
+        lags = sorted(out["response_bps"])
+        # Trending up, not monotone at every step: on a few thousand trades
+        # the long lags have few samples and wobble.
+        self.assertGreater(out["response_bps"][lags[-1]], out["response_bps"][lags[0]] * 2)
+
+    def test_response_finds_nothing_in_a_signless_walk(self):
+        """If trade direction carries no information, the response function
+        must not invent one."""
+        from trading import microdata
+        out = microdata.response(self.tape(drift_per_trade=0.0, long_memory=False))
+        self.assertTrue(out["ok"])
+        biggest = max(abs(v) for v in out["response_bps"].values())
+        self.assertLess(biggest, 0.5, "found impact in a tape that has none")
+
+    def test_the_lag_range_is_reported_with_the_exponent(self):
+        """R(L) is concave, so an exponent without its range is meaningless
+        -- the same data gives 0.86 over short lags and 0.50 over four
+        decades."""
+        from trading import microdata
+        out = microdata.response(self.tape(n=20_000, drift_per_trade=0.00001))
+        self.assertIsNotNone(out["lag_range"])
+        self.assertGreater(out["lag_range"][1], out["lag_range"][0])
+        self.assertIsNotNone(out["near_slope"])
+
+    def test_the_lag_range_grows_with_the_sample(self):
+        from trading import microdata
+        small = microdata.response(self.tape(n=2_000, drift_per_trade=0.00001))
+        large = microdata.response(self.tape(n=40_000, drift_per_trade=0.00001))
+        self.assertGreater(large["lag_range"][1], small["lag_range"][1])
+
+    def test_impact_by_size_survives_a_tape_of_dust(self):
+        """Half of a real crypto tape is the same minimum size. Quantile
+        buckets collapse onto one median and measure nothing, which is why
+        the bins are log-spaced."""
+        from trading import microdata
+        tape = self.tape(n=6000, drift_per_trade=0.00001)
+        for row in tape[::2]:
+            row["qty"] = 0.0001                      # dust, all identical
+        out = microdata.impact_by_size(tape)
+        self.assertTrue(out["ok"], out.get("error"))
+        medians = [p["median_size"] for p in out["points"]]
+        self.assertEqual(len(medians), len(set(medians)), "buckets collapsed onto one size")
+
+    def test_measurement_declines_on_a_short_tape(self):
+        from trading import microdata
+        self.assertFalse(microdata.response(self.tape(n=50))["ok"])
+        self.assertFalse(microdata.impact_by_size(self.tape(n=50))["ok"])
+
+    def test_the_simulator_uses_the_measured_constants(self):
+        """The propagator's parameters have to be the measured ones, not
+        whatever made the answer come out at 0.5."""
+        from trading import execution
+        self.assertLess(execution.MEASURED_SHAPE, 0.0, "the real book thins with distance")
+        self.assertAlmostEqual(execution.MEASURED_DECAY, 0.5, places=6)
+        self.assertGreater(execution.MEASURED_KICK_BPS, 0.0)
+
+    def test_working_an_order_is_square_root_and_sweeping_is_not(self):
+        """The headline result, asserted rather than admired: the same book
+        gives convex impact when swept and square-root impact when worked."""
+        import math
+
+        from trading import execution
+        from trading.data import Bar
+        rng = random.Random(7)
+        bars, price = [], 100.0
+        for i in range(40):
+            close = price * (1 + rng.gauss(0, 0.001))
+            bars.append(Bar(ts=1_600_000_000 + i * 300, open=price,
+                            high=max(price, close) * 1.0005, low=min(price, close) * 0.9995,
+                            close=close, volume=200_000))
+            price = close
+
+        def exponent(window):
+            volume = sum(b.volume for b in window)
+            points = []
+            for part in (0.002, 0.005, 0.01, 0.02, 0.04):
+                run = execution.execute(window, "buy", volume * part, "market")
+                if run["fill_rate"] > 0.98 and run["impact_bps"] > 0:
+                    points.append((part, run["impact_bps"]))
+            if len(points) < 3:
+                return None
+            xs = [math.log(p) for p, _ in points]
+            ys = [math.log(c) for _, c in points]
+            n = len(xs)
+            mx, my = sum(xs) / n, sum(ys) / n
+            return sum((xs[i] - mx) * (ys[i] - my) for i in range(n)) / sum((x - mx) ** 2 for x in xs)
+
+        swept = exponent(bars[:1])
+        worked = exponent(bars)
+        self.assertIsNotNone(swept)
+        self.assertIsNotNone(worked)
+        self.assertGreater(swept, 0.85, "sweeping the visible book must be convex")
+        self.assertGreater(worked, 0.35, "working an order must not be free")
+        self.assertLess(worked, 0.75, "working an order must cost about the square root of size")
+        self.assertLess(worked, swept)
 
 
 if __name__ == "__main__":

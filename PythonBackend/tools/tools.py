@@ -17,6 +17,7 @@ from .trading_tools import (
     open_trading_terminal,
     stress_test_strategy,
     execution_cost,
+    measure_microstructure,
     compare_allocations,
     run_in_trading_terminal,
     list_strategies,
@@ -2736,6 +2737,7 @@ _tool_functions = [
     open_trading_terminal,
     stress_test_strategy,
     execution_cost,
+    measure_microstructure,
     compare_allocations,
     run_in_trading_terminal,
 ]

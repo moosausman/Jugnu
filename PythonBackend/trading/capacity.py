@@ -104,13 +104,17 @@ def calibrate(bars: list, sizes: tuple = (), interval_vol: float | None = None) 
     if vol <= 0:
         return {"ok": False, "error": "no volatility in this window"}
 
-    sizes = sizes or tuple(volume * p for p in (0.002, 0.005, 0.01, 0.02, 0.04))
+    sizes = sizes or tuple(volume * p for p in (0.002, 0.005, 0.01, 0.02, 0.04, 0.08))
     points = []
     for size in sizes:
         run = execution.execute(bars, "buy", size, "market")
-        cost = run.get("spread_paid_bps")
-        # Only fits where the order actually completed: a partial fill
-        # measures the cost of the part that was cheap enough to get done.
+        # Fit on the order's OWN displacement, not on shortfall against
+        # arrival: over a window of any length the market's own drift is
+        # far larger than the impact and swamps the fit. This is the
+        # counterfactual -- the part that would not have happened without
+        # the order. Completed fills only; a partial one measures the cost
+        # of the part that was cheap enough to get done.
+        cost = run.get("impact_bps")
         if cost and cost > 0 and run["fill_rate"] > 0.98:
             points.append((size / volume, cost))
     if len(points) < 3:
@@ -128,10 +132,20 @@ def calibrate(bars: list, sizes: tuple = (), interval_vol: float | None = None) 
     ss_tot = sum((y - my) ** 2 for y in ys)
     # cost_bps = exp(intercept) * part^slope, and cost_bps = k*sigma*sqrt(part)*1e4
     k = math.exp(intercept) / (vol * 10_000.0) if vol > 0 else 0.0
+    # The EXPONENT is the transferable result: it comes out of the book's
+    # measured shape and the measured response function, and it lands near
+    # 0.5 on every instrument tried. The COEFFICIENT does not transfer. The
+    # simulator's kick size was measured on BTCUSDT, and one kick per fill
+    # is a convention rather than a measurement, so k inherits both. Only
+    # believe it inside the empirical band; outside it, say so and use the
+    # conservative default instead of a number that looks precise.
+    plausible = 0.1 <= k <= 2.0
     return {"ok": True, "k": k, "exponent": slope,
             "r2": 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0,
             "volatility": vol, "points": points,
-            "square_root": abs(slope - 0.5) < 0.15}
+            "square_root": abs(slope - 0.5) < 0.15,
+            "plausible_k": plausible,
+            "usable_k": k if plausible else DEFAULT_K}
 
 
 def cost_of_run(result, bars: list, aum: float, k: float = DEFAULT_K,

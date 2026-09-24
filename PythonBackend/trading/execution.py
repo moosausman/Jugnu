@@ -49,6 +49,45 @@ from .book import BUY, SELL, Book, Order
 MINE = "mine"
 CROWD = "market"
 
+# How resting size varies with distance from the mid: size ~ (level+1)**e.
+#
+# This used to be +1.0 -- depth growing linearly with distance -- because
+# that shape produces the square-root law by construction. Then the real
+# book was measured (microdata.py, Binance, 5000 levels) and it does not
+# look like that at all: cumulative depth scales as distance**0.7 on BTC,
+# ETH and SOL alike, which means density DECAYS with distance and the
+# exponent is about -0.3.
+#
+# The square-root law is therefore not a property of the visible book. It
+# is a property of time: of liquidity replenishing while an order is
+# worked, which is what `resilience` models. Sweeping the visible book is
+# convex and always was.
+MEASURED_SHAPE = -0.3
+
+# Impact, as measured rather than assumed. From 400,000 real Binance trades
+# (microdata.py, one day of BTCUSDT):
+#
+#   delta = 0.00   a single trade's impact does not depend on its size.
+#                  Across a 2000x range of trade sizes the mid moved the
+#                  same 0.15-0.31bps afterwards. Impact is about how many
+#                  times you trade, not how much you trade at once.
+#   gamma = 0.502  the response function R(L) -- the average signed mid move
+#                  L trades after a trade -- grows as the square root of L,
+#                  concave and saturating.
+#
+# Those two together ARE the square-root law, and they say how to model it:
+# a constant kick per trade whose effect decays as a power law. If each
+# trade kicks by k and kicks decay as (1+age)**-beta, then
+#     R(L) = k * sum (1+a)**-beta  ~  k * L**(1-beta)
+# so beta = 0.5 reproduces the measured gamma = 0.5 exactly.
+#
+# Each fill counts as one kick, so a sweep that eats five levels kicks five
+# times and a worked order kicks the same number of times spread out -- and
+# the spreading is what makes it cheaper, because the earlier kicks have
+# decayed by the time the later ones land.
+MEASURED_KICK_BPS = 0.25
+MEASURED_DECAY = 0.5
+
 
 class Session:
     """A book kept alive across bars, with a crowd trading in it.
@@ -70,14 +109,28 @@ class Session:
     """
 
     def __init__(self, tick: float = 0.01, levels: int = 40, spread_ticks: int = 1,
-                 depth_share: float = 0.02, resilience: float = 0.35, seed: int = 7):
-        """`depth_share` scales the ladder against a step's volume;
-        `resilience` is the fraction of the hole refilled each step."""
+                 depth_share: float = 0.02, resilience: float = 0.35,
+                 shape_exponent: float = MEASURED_SHAPE,
+                 kick_bps: float = MEASURED_KICK_BPS, decay: float = MEASURED_DECAY,
+                 seed: int = 7):
+        """`depth_share` scales the ladder against a step's volume,
+        `resilience` is the fraction of the hole refilled each step, and
+        `shape_exponent` is how resting size varies with distance from the
+        mid: size ~ (level + 1) ** exponent.
+
+        The default is measured, not chosen -- see MEASURED_SHAPE.
+        """
         self.book = Book(tick=tick)
         self.levels = levels
         self.spread_ticks = max(1, spread_ticks)
         self.depth_share = depth_share
         self.resilience = min(max(resilience, 0.01), 1.0)
+        self.shape_exponent = shape_exponent
+        self.kick_bps = kick_bps
+        self.decay = decay
+        self.step = 0
+        self.kicks: list[tuple[int, float]] = []       # (step, signed kick)
+        self._peak = 0.0
         self.rng = random.Random(seed)
         self.my_fills: list = []
         self.mid_history: list[float] = []
@@ -104,9 +157,7 @@ class Session:
         half = self.spread_ticks * self.book.tick / 2.0
         for level in range(self.levels):
             offset = half + level * self.book.tick
-            # Linear in distance: the near touch is thin, the depth behind
-            # it is not. This is the shape that gives square-root impact.
-            base = max(1.0, size * self.depth_share * (level + 1))
+            base = max(1.0, size * self.depth_share * (level + 1) ** self.shape_exponent)
             for side, direction in ((BUY, -1.0), (SELL, 1.0)):
                 missing = min(remaining[side], base)     # the hole sits nearest the touch
                 remaining[side] -= missing
@@ -134,11 +185,36 @@ class Session:
             self._collect(self.book.submit(
                 Order(SELL, sells, round(reference - band, 10), tif="IOC", owner=CROWD)))
 
+    def peak_displacement(self) -> float:
+        """The furthest my own trading pushed the price, as a fraction.
+
+        Reported separately from shortfall because shortfall against the
+        arrival price also contains everything the market did meanwhile,
+        which at small sizes is all of it. This is the counterfactual: the
+        part that would not have happened without the order.
+        """
+        return self._peak
+
+    def displacement(self) -> float:
+        """How far my own trading has pushed the price, as a fraction.
+
+        Every kick I have made, faded by how long ago it was. This is the
+        propagator: it is why sweeping costs more than working an order,
+        and why the cost of a metaorder grows as the square root of its
+        size rather than linearly.
+        """
+        if not self.kicks:
+            return 0.0
+        total = sum(k * (1.0 + self.step - when) ** -self.decay for when, k in self.kicks)
+        return total / 10_000.0
+
     def _collect(self, fills: list) -> None:
         for fill in fills:
             if fill.owner == MINE:
                 self.my_fills.append(fill)
                 if fill.role == "taker":
+                    # Size-independent, because that is what the tape says.
+                    self.kicks.append((self.step, self.kick_bps if fill.side == BUY else -self.kick_bps))
                     # Buying consumes resting sells, and that depth is gone
                     # until resilience puts it back.
                     eaten = SELL if fill.side == BUY else BUY
@@ -166,11 +242,16 @@ class Session:
         span = max(bar.high - bar.low, self.book.tick)
         previous = bar.open
         for price in prices:
-            self._refresh(price, per_step)
+            self.step += 1
+            # The bar's path is what the market did without me. My own
+            # trading moves the book on top of it.
+            self._refresh(price * (1.0 + self.displacement()), per_step)
             # Flow leans the way the price moved, which is what makes a
             # passive fill arrive just before the move continues.
             lean = 0.5 + 0.5 * max(-1.0, min(1.0, (price - previous) / (span / len(prices))))
-            self._aggress(per_step, max(0.05, min(0.95, lean)), price)
+            self._aggress(per_step, max(0.05, min(0.95, lean)),
+                          price * (1.0 + self.displacement()))
+            self._peak = max(self._peak, abs(self.displacement()))
             self.mid_history.append(self.book.mid or price)
             if on_step:
                 on_step(self)
@@ -222,7 +303,8 @@ def _report(side: str, wanted: float, arrival: float, session: Session,
                 "shortfall_bps": None, "vs_vwap_bps": None, "spread_paid_bps": None,
                 "maker_share": None, "fills": 0, "post_fill_drift_bps": None,
                 "total_shortfall_bps": round(
-                    _total_shortfall(side, wanted, 0.0, arrival, 0.0, final), 2)}
+                    _total_shortfall(side, wanted, 0.0, arrival, 0.0, final), 2),
+                "impact_bps": round(session.peak_displacement() * 10_000.0, 3)}
     average = sum(f.price * f.qty for f in fills) / got
     maker = sum(f.qty for f in fills if f.role == "maker")
     # Against the arrival mid this includes everything the market did while
@@ -245,6 +327,7 @@ def _report(side: str, wanted: float, arrival: float, session: Session,
         "maker_share": round(maker / got, 4),
         "fills": len(fills),
         "post_fill_drift_bps": round(drift, 2),
+        "impact_bps": round(session.peak_displacement() * 10_000.0, 3),
     }
 
 

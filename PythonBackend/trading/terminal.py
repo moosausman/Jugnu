@@ -549,6 +549,7 @@ class Terminal:
                 ("factor STRAT SYM", "alpha vs market, size, value, momentum"),
                 ("cap STRAT SYM", "how much money before impact eats it"),
                 ("exec SYM 50000 buy", "six execution algos through a real order book"),
+                ("micro [BTCUSDT]", "measure a real book and tape; check the model"),
                 ("alloc SYM SYM…", "equal vs inverse-variance vs HRP"),
             ]),
             ("paper", [
@@ -1163,7 +1164,7 @@ class Terminal:
                 fit = capacity.calibrate(load(symbol, "5m")[-40:])
             except DataError:
                 pass
-            k = fit["k"] if fit.get("ok") and fit.get("square_root") else capacity.DEFAULT_K
+            k = fit.get("usable_k", capacity.DEFAULT_K) if fit.get("ok") else capacity.DEFAULT_K
             report = capacity.curve(result, bars, result.metrics["cagr"], k=k)
             self.rule(f"{symbol}  {strategy}  capacity")
             if not report.get("ok"):
@@ -1182,10 +1183,18 @@ class Terminal:
             for line in capacity.verdict(report):
                 self.para(line)
             if fit.get("ok"):
-                self.para(f"Impact coefficient k={fit['k']:.2f}, measured by sweeping this book at five "
-                          f"sizes and fitting log cost against log participation: the exponent came out "
-                          f"{fit['exponent']:.2f} (R²={fit['r2']:.2f}), against 0.50 for the square-root "
-                          f"law. Not assumed -- fitted.", colour=GREEN if fit["square_root"] else AMBER)
+                self.para(f"Impact exponent {fit['exponent']:.2f} (R²={fit['r2']:.2f}), fitted by working "
+                          f"this order through a simulated book at six sizes -- 0.50 is the square-root "
+                          f"law. The book's shape and its response function were themselves measured "
+                          f"from real trades, so the exponent is derived, not assumed.",
+                          colour=GREEN if fit["square_root"] else AMBER)
+                if fit["plausible_k"]:
+                    self.para(f"Coefficient k={fit['k']:.2f}, in the empirical range for equities.")
+                else:
+                    self.para(f"The fitted coefficient ({fit['k']:.1f}) is outside the plausible range, "
+                              f"so k={capacity.DEFAULT_K:.1f} is used instead. The exponent transfers "
+                              "between instruments; the coefficient carries the kick size measured on "
+                              "crypto and does not.", colour=AMBER)
             else:
                 self.para(f"No intraday data to calibrate against, so k={capacity.DEFAULT_K:.1f}, the "
                           "conservative default.", colour=FAINT)
@@ -1266,6 +1275,100 @@ class Terminal:
                 self.para("At least one fold loses money. A strategy that only works in some regimes "
                           "is a regime bet wearing a strategy's clothes.", colour=AMBER)
         self.job(f"cv {strategy} {symbol}", work)
+
+    def cmd_micro(self, args: list[str]) -> None:
+        """`micro [SYM] [day]` -- measure a real order book and real tape,
+        and check the simulator's assumptions against them."""
+        symbol = (args[0].upper() if args else "BTCUSDT")
+        day = args[1] if len(args) > 1 else ""
+
+        def work(entry):
+            from . import execution, microdata
+            self.rule(f"{symbol}  measured microstructure")
+            try:
+                book = microdata.depth(symbol, 5000)
+            except microdata.MicroError as e:
+                self.write(f"{ui.GUTTER}{RED}{e}{RESET}")
+                self.para("Real book and tape data is free for crypto only. Try BTCUSDT, ETHUSDT "
+                          "or SOLUSDT.", colour=FAINT)
+                return
+            mid = book["mid"]
+            # Cumulative depth against distance. Density constant -> exponent
+            # 1; density growing with distance -> 2. The simulator used to
+            # assume the second.
+            pts, cumulative = [], 0.0
+            for price, qty in book["asks"]:
+                away = (price - mid) / mid * 10_000
+                cumulative += qty
+                if away > 0.5:
+                    pts.append((away, cumulative))
+            exponent = 0.0
+            if len(pts) > 20:
+                xs = [math.log(d) for d, _ in pts]
+                ys = [math.log(q) for _, q in pts]
+                n = len(xs)
+                mx, my = sum(xs) / n, sum(ys) / n
+                bottom = sum((x - mx) ** 2 for x in xs)
+                exponent = sum((xs[i] - mx) * (ys[i] - my) for i in range(n)) / bottom if bottom else 0
+            self.stats([
+                ("spread", f"{INK}{book['spread_bps']:.4f}bps{RESET}"),
+                ("levels", f"{INK}{len(book['asks'])}{RESET}"),
+                ("reach", f"{INK}{pts[-1][0]:.0f}bps{RESET}" if pts else "—"),
+                ("depth exponent", f"{INK}{exponent:.2f}{RESET}"),
+            ])
+            self.para(f"Cumulative depth scales as distance^{exponent:.2f}. Constant density would be "
+                      "1.0 and density growing with distance would be 2.0, so anything below 1 means "
+                      "the book THINS as you go out and sweeping it is convex.")
+
+            self.write("")
+            try:
+                tape = (microdata.day_trades(symbol, day, limit=250_000) if day
+                        else microdata.trades(symbol, 1000))
+            except microdata.MicroError as e:
+                self.write(f"{ui.GUTTER}{AMBER}{e}{RESET}")
+                return
+            report = microdata.response(tape)
+            if not report.get("ok"):
+                self.write(f"{ui.GUTTER}{DIM}{report['error']}{RESET}")
+                return
+            self.write(f"{ui.GUTTER}{FAINT}response function, {report['trades']:,} real trades "
+                       f"(every one with its true aggressor side){RESET}")
+            top = max(report["response_bps"].values()) or 1.0
+            for lag, bps in sorted(report["response_bps"].items()):
+                bar = BAR * int(max(0.0, bps) / top * 38)
+                self.write(f"{ui.GUTTER}{DIM}{lag:>6,} trades{RESET} {INK}{bps:+8.4f}{RESET} "
+                           f"{CLAY}{bar}{RESET}")
+            self.write("")
+            if report.get("gamma") is not None:
+                gamma = report["gamma"]
+                low, high = report["lag_range"]
+                self.para(f"Across lags {low}-{high:,} the slope is {gamma:.2f}"
+                          + (f", but it is {report['near_slope']:.2f} over the short lags and "
+                             f"{report['far_slope']:.2f} over the long ones."
+                             if report.get("far_slope") is not None else "."),
+                          colour=GREEN if report["square_root"] else AMBER)
+                self.para("There is no single exponent here, because the response is concave -- it "
+                          "rises fast and then saturates. The 0.50 that gets quoted as the "
+                          "square-root law is the chord across about four decades of lag, not a "
+                          "power law holding at every scale. Measure a narrow range and you will "
+                          "get 0.86; measure only the tail and you will get 0.16.")
+                if report["trades"] < 50_000:
+                    self.para(f"{report['trades']:,} trades is a few minutes and cannot reach the long "
+                              f"lags. `micro {symbol} 2026-09-21` pulls a whole day from the archive.",
+                              colour=FAINT)
+            sized = microdata.impact_by_size(tape)
+            if sized.get("ok") and sized.get("exponent") is not None:
+                self.para(f"A single trade's impact scales with its size as size^{sized['exponent']:.2f} "
+                          "-- that is, essentially not at all. Impact comes from how many times you "
+                          "trade, not how much you trade at once, which is exactly why working an "
+                          "order beats sweeping it.")
+            self.para(f"The simulator is built on these two numbers: shape "
+                      f"{execution.MEASURED_SHAPE:+.1f}, one kick of "
+                      f"{execution.MEASURED_KICK_BPS}bps per fill decaying as "
+                      f"(1+age)^-{execution.MEASURED_DECAY}. Crypto, though -- no NBBO, finer tick, "
+                      "different participants. Right for validating the mechanics, wrong for "
+                      "calibrating an equity cost.", colour=FAINT)
+        self.job(f"micro {symbol}", work)
 
     def cmd_execute(self, args: list[str]) -> None:
         """`exec SYM [qty] [buy|sell] [interval]` -- six ways to work an order
@@ -2198,6 +2301,7 @@ COMMANDS = {
     "alloc": Terminal.cmd_allocate, "hrp": Terminal.cmd_allocate,
     "cv": Terminal.cmd_purged, "purged": Terminal.cmd_purged,
     "exec": Terminal.cmd_execute, "fills": Terminal.cmd_execute,
+    "micro": Terminal.cmd_micro, "book": Terminal.cmd_micro,
     "replay": Terminal.cmd_replay,
     "trades": Terminal.cmd_trades,
     "runs": Terminal.cmd_runs,
