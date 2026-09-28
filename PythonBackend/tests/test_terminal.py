@@ -202,6 +202,52 @@ class WatchlistTests(unittest.TestCase):
         self.assertTrue(quote.up)          # a zero change counts as flat, not a crash
 
 
+class BarSizeTests(unittest.TestCase):
+    """`bt sma NVDA 5m` is a day-trading backtest. It used to be a daily
+    one: the bar size parsed as nothing at all and was silently dropped,
+    which is the worst way for a tool to be wrong."""
+
+    def parse(self, args):
+        terminal = term.Terminal.__new__(term.Terminal)
+        terminal.session = term.Session()
+        return terminal._parse_run(args), terminal.session.interval
+
+    def test_a_bar_size_is_recognised(self):
+        for size in ("1m", "5m", "15m", "30m", "1h", "1d"):
+            (_, symbol, _, _), interval = self.parse(["sma", "NVDA", size])
+            self.assertEqual(interval, size)
+            self.assertEqual(symbol, "NVDA")
+
+    def test_it_defaults_to_daily(self):
+        (_, _, _, _), interval = self.parse(["sma", "NVDA"])
+        self.assertEqual(interval, "1d")
+
+    def test_a_bar_size_is_not_mistaken_for_a_year_or_a_parameter(self):
+        (_, _, start, params), interval = self.parse(["sma", "NVDA", "5m", "2015", "fast=10"])
+        self.assertEqual(interval, "5m")
+        self.assertEqual(start, "2015-01-01")
+        self.assertEqual(params, {"fast": 10})
+
+    def test_intraday_annualisation_uses_the_session_length(self):
+        """A 5-minute Sharpe annualised with 252 would be wrong by a factor
+        of nine. Equities get a 6.5-hour day, crypto a 24-hour one."""
+        from trading.data import periods_per_year
+        self.assertEqual(periods_per_year("NVDA", "1d"), 252)
+        self.assertEqual(periods_per_year("NVDA", "5m"), 252 * 78)
+        self.assertEqual(periods_per_year("BTC-USD", "5m"), 365 * 288)
+
+    def test_the_remote_runner_is_told_the_bar_size(self):
+        """appapi already read an interval out of the request; the terminal
+        never put one in, so every run sent to the other account was daily
+        whatever had been typed."""
+        import re
+        source = open(term.__file__.replace(".pyc", ".py")).read()
+        for action in ("backtest", "sweep", "walk_forward", "risk"):
+            match = re.search(r'\{"action": "' + action + r'".{0,320}?\}', source, re.S)
+            self.assertIsNotNone(match, action)
+            self.assertIn("interval", match.group(0), f"{action} payload drops the bar size")
+
+
 class OpeningManyTests(unittest.TestCase):
     """Jugnu opening four terminals side by side, each running its own
     simulation -- the tiling arithmetic and the startup commands."""

@@ -69,6 +69,9 @@ class Session:
     scroll: int = 0
     symbol: str = "AAPL"
     strategy: str = "sma"
+    # Bar size for the last command that took one. Daily unless a command
+    # said otherwise -- `bt sma NVDA 5m` is a day-trading backtest.
+    interval: str = "1d"
     last_result = None
     last_sweep: dict | None = None
     busy: str = ""
@@ -699,12 +702,22 @@ class Terminal:
     # -- research ----------------------------------------------------------
 
     def _parse_run(self, args: list[str]) -> tuple[str, str, str, dict]:
+        """strategy, symbol, start, params -- and the bar size lands in
+        `self.session.interval`, because adding a fifth return value would
+        mean touching every caller.
+
+        A bar size used to be parsed as nothing at all: `bt sma NVDA 5m`
+        silently ran daily bars, which is the worst way to be wrong.
+        """
         strategy = args[0] if args else self.session.strategy
         symbol = (args[1] if len(args) > 1 else self.session.symbol).upper()
         start = ""
+        interval = "1d"
         params: dict = {}
         for token in args[2:]:
-            if "=" in token:
+            if token.lower() in data.BAR_MINUTES:
+                interval = token.lower()
+            elif "=" in token:
                 key, value = token.split("=", 1)
                 try:
                     params[key] = int(value)
@@ -718,20 +731,35 @@ class Terminal:
             elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", token):
                 start = token
         self.session.strategy, self.session.symbol = strategy, symbol
+        self.session.interval = interval
         return strategy, symbol, start, params
+
+    def _bars_for(self, symbol: str, start: str):
+        """Load at whatever bar size the command asked for, and say so when
+        there is not enough of it -- intraday history is short (Yahoo gives
+        seven days of one-minute bars, fifty-nine of five-minute)."""
+        interval = getattr(self.session, "interval", "1d")
+        bars = load(symbol, interval, start=start or None)
+        if len(bars) < 60:
+            raise DataError(f"only {len(bars)} {interval} bars for {symbol}; "
+                            "not enough to test anything on")
+        return bars, interval
 
     def cmd_backtest(self, args: list[str]) -> None:
         strategy, symbol, start, params = self._parse_run(args)
         if self.session.where == "jugnu":
             self._remote({"action": "backtest", "symbol": symbol, "strategy": strategy,
-                          "start": start, "params": params},
+                          "start": start, "params": params,
+                          "interval": self.session.interval},
                          f"bt {strategy} {symbol}", self._show_json_result)
             return
 
         def work(entry):
-            bars = load(symbol, start=start or None)
-            result = analysis.backtest(bars, strategy, params, symbol=symbol)
-            costs = analysis.cost_sensitivity(bars, strategy, params, symbol=symbol)
+            bars = load(symbol, self.session.interval, start=start or None)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol,
+                                      interval=self.session.interval)
+            costs = analysis.cost_sensitivity(bars, strategy, params, symbol=symbol,
+                                              interval=self.session.interval)
             notes = metrics.warnings(result.metrics, result.benchmark_metrics, cost_curve=costs,
                                      bars=len(bars), trades=result.metrics["trades"])
             self.session.last_result = result
@@ -828,13 +856,14 @@ class Terminal:
                            f"   {DIM}sharpe{RESET} {best['sharpe']:.2f}")
                 for line in explain.plain_sweep(reply):
                     self.para(line)
-            self._remote({"action": "sweep", "symbol": symbol, "strategy": strategy, "start": start},
+            self._remote({"action": "sweep", "symbol": symbol, "strategy": strategy, "start": start,
+                          "interval": self.session.interval},
                          f"sweep {strategy} {symbol}", show)
             return
 
         def work(entry):
-            bars = load(symbol, start=start or None)
-            result = analysis.sweep(bars, strategy, symbol=symbol)
+            bars = load(symbol, self.session.interval, start=start or None)
+            result = analysis.sweep(bars, strategy, symbol=symbol, interval=self.session.interval)
             self.session.last_sweep = result
             self.rule(f"{symbol} · {strategy} · {result['runs']} combinations")
             self.write(render.heatmap(result))
@@ -862,12 +891,14 @@ class Terminal:
                                f"{reply['out_of_sample_return'] * 100:+.1f}%"
                                f"   {DIM}buy & hold{RESET} {reply['benchmark_return'] * 100:+.1f}%")
             self._remote({"action": "walk_forward", "symbol": symbol, "strategy": strategy,
+                          "interval": self.session.interval,
                           "start": start, "folds": folds},
                          f"wf {strategy} {symbol}", show)
             return
         def work(entry):
-            bars = load(symbol, start=start or None)
-            result = analysis.walk_forward(bars, strategy, symbol=symbol, folds=folds)
+            bars = load(symbol, self.session.interval, start=start or None)
+            result = analysis.walk_forward(bars, strategy, symbol=symbol, folds=folds,
+                                           interval=self.session.interval)
             self.rule(f"{symbol} · {strategy} · walk forward")
             for fold in result["folds"]:
                 params = " ".join(f"{k}={v}" for k, v in fold["params"].items())
@@ -891,8 +922,9 @@ class Terminal:
     def cmd_costs(self, args: list[str]) -> None:
         strategy, symbol, start, params = self._parse_run(args)
         def work(entry):
-            bars = load(symbol, start=start or None)
+            bars = load(symbol, self.session.interval, start=start or None)
             curve = analysis.cost_sensitivity(bars, strategy, params, symbol=symbol,
+                                              interval=self.session.interval,
                                               levels=(0.0, 2.0, 5.0, 10.0, 20.0, 50.0))
             self.rule(f"{symbol} · {strategy} · cost sensitivity")
             best = max(abs(v) for v in curve.values()) or 1
@@ -918,12 +950,13 @@ class Terminal:
 
         def work(entry):
             from . import quant
-            bars = load(symbol, start=start or None)
-            result = analysis.backtest(bars, strategy, params, symbol=symbol)
+            bars = load(symbol, self.session.interval, start=start or None)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol,
+                                      interval=self.session.interval)
             self.session.last_result = result
             rets = self._daily_returns(result)
             m = quant.moments(rets)
-            per_year = data.periods_per_year(symbol, "1d")
+            per_year = data.periods_per_year(symbol, self.session.interval)
             sr = m["mean"] / m["sd"] if m["sd"] > 0 else 0.0
             psr = quant.probabilistic_sharpe(sr, m["n"], m["skew"], m["kurtosis"])
             need = quant.min_track_record(sr, m["n"], m["skew"], m["kurtosis"])
@@ -964,8 +997,9 @@ class Terminal:
 
         def work(entry):
             from . import quant
-            bars = load(symbol, start=start or None)
-            grid = analysis.sweep_returns(bars, strategy, symbol=symbol)
+            bars = load(symbol, self.session.interval, start=start or None)
+            grid = analysis.sweep_returns(bars, strategy, symbol=symbol,
+                                         interval=self.session.interval)
             report = quant.cscv_pbo(grid["matrix"], splits=10)
             self.rule(f"{symbol}  {strategy}  overfitting")
             if not report.get("enough"):
@@ -1002,16 +1036,18 @@ class Terminal:
 
         def work(entry):
             from . import quant
-            bars = load(symbol, start=start or None)
-            grid = analysis.sweep_returns(bars, strategy, symbol=symbol)
+            bars = load(symbol, self.session.interval, start=start or None)
+            grid = analysis.sweep_returns(bars, strategy, symbol=symbol,
+                                         interval=self.session.interval)
             here = grid["configurations"]
             sharpes = [quant.sharpe([row[c] for row in grid["matrix"]]) for c in range(here)]
             best = max(sharpes)
-            result = analysis.backtest(bars, strategy, params, symbol=symbol)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol,
+                                      interval=self.session.interval)
             self.session.last_result = result
             rets = self._daily_returns(result)
             m = quant.moments(rets)
-            per_year = data.periods_per_year(symbol, "1d")
+            per_year = data.periods_per_year(symbol, self.session.interval)
 
             # The whole ledger for this symbol, not just the sweep on screen.
             history = store.search_history(symbol)
@@ -1064,7 +1100,7 @@ class Terminal:
                            f"The first backtest is the cheapest one you will ever run.{RESET}")
                 return
             spread = quant.moments(history["sharpes"])
-            per_year = data.periods_per_year(symbol, "1d")
+            per_year = data.periods_per_year(symbol, self.session.interval)
             bars = 2000
             try:
                 bars = max(250, len(load(symbol)))
@@ -1118,8 +1154,14 @@ class Terminal:
 
         def work(entry):
             from . import factors
-            bars = load(symbol, start=start or None)
-            result = analysis.backtest(bars, strategy, params, symbol=symbol)
+            if self.session.interval != "1d":
+                self.write(f"{ui.GUTTER}{AMBER}factor attribution is daily: the factors are daily "
+                           f"ETF spreads, so {self.session.interval} bars cannot line up with "
+                           f"them.{RESET}")
+                return
+            bars = load(symbol, "1d", start=start or None)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol,
+                                      interval=self.session.interval)
             self.session.last_result = result
             rets = self._daily_returns(result)
             report = factors.attribute(result.dates[1:], rets, start=start or None)
@@ -1154,8 +1196,13 @@ class Terminal:
 
         def work(entry):
             from . import capacity
-            bars = load(symbol, start=start or None)
-            result = analysis.backtest(bars, strategy, params, symbol=symbol)
+            if self.session.interval != "1d":
+                self.write(f"{ui.GUTTER}{AMBER}capacity is measured against daily volume and daily "
+                           f"volatility; run it without a bar size.{RESET}")
+                return
+            bars = load(symbol, "1d", start=start or None)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol,
+                                      interval=self.session.interval)
             self.session.last_result = result
             # Measure this instrument's impact coefficient by trading through
             # the book, rather than assuming the conservative default. The
@@ -1248,11 +1295,12 @@ class Terminal:
 
         def work(entry):
             from . import quant
-            bars = load(symbol, start=start or None)
-            result = analysis.backtest(bars, strategy, params, symbol=symbol)
+            bars = load(symbol, self.session.interval, start=start or None)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol,
+                                      interval=self.session.interval)
             self.session.last_result = result
             rets = self._daily_returns(result)
-            per_year = data.periods_per_year(symbol, "1d")
+            per_year = data.periods_per_year(symbol, self.session.interval)
             folds = quant.purged_splits(len(rets), folds=5, embargo=0.01)
             if not folds:
                 self.write(f"{ui.GUTTER}{DIM}Not enough history to split.{RESET}")
@@ -1635,8 +1683,9 @@ class Terminal:
         strategy, symbol, start, params = self._parse_run(args)
 
         def work(entry):
-            bars = load(symbol, start=start or None)
-            result = analysis.backtest(bars, strategy, params, symbol=symbol)
+            bars = load(symbol, self.session.interval, start=start or None)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol,
+                                      interval=self.session.interval)
             self.session.last_result = result
             carlo = analysis.monte_carlo(result)
             self.rule(f"{symbol}  {strategy}  monte carlo")
@@ -1669,8 +1718,9 @@ class Terminal:
         strategy, symbol, start, params = self._parse_run(args)
         speed = next((int(a) for a in args[2:] if a.isdigit() and len(a) <= 3), 40)
         def work(entry):
-            bars = load(symbol, start=start or None)
-            result = analysis.backtest(bars, strategy, params, symbol=symbol)
+            bars = load(symbol, self.session.interval, start=start or None)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol,
+                                      interval=self.session.interval)
             self.session.last_result = result
             trades = {t.date: t for t in result.trades}
             self.rule(f"{symbol} · {strategy} · replay")
@@ -1984,6 +2034,7 @@ class Terminal:
         strategy, symbol, start, params = self._parse_run(args)
         if self.session.where == "jugnu":
             self._remote({"action": "risk", "symbol": symbol, "strategy": strategy,
+                          "interval": self.session.interval,
                           "start": start, "params": params},
                          f"risk {strategy} {symbol}",
                          lambda reply: self._show_risk(reply["symbol"], reply["strategy"],
@@ -1991,8 +2042,9 @@ class Terminal:
             return
 
         def work(entry):
-            bars = load(symbol, start=start or None)
-            result = analysis.backtest(bars, strategy, params, symbol=symbol)
+            bars = load(symbol, self.session.interval, start=start or None)
+            result = analysis.backtest(bars, strategy, params, symbol=symbol,
+                                      interval=self.session.interval)
             self.session.last_result = result
             self._show_risk(symbol, strategy, risk.full(result, bars),
                             risk.verdicts(risk.full(result, bars), result))
@@ -2052,7 +2104,7 @@ class Terminal:
             self.write(f"{DIM}vs sma rsi breakout AAPL 2015{RESET}")
             return
         def work(entry):
-            bars = load(symbol, start=start or None)
+            bars = load(symbol, self.session.interval, start=start or None)
             self.rule(f"{symbol}  {len(names)} strategies")
             rows = [(name, analysis.backtest(bars, name, symbol=symbol)) for name in names]
             hold = rows[0][1].benchmark_metrics
