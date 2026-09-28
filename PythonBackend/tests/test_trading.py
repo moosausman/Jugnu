@@ -233,8 +233,9 @@ class ToolTests(unittest.TestCase):
     def test_backtest_tool_returns_a_summary_and_the_benchmark(self):
         out = self.tools.backtest_strategy(symbol="TEST", strategy="sma")
         self.assertTrue(out["ok"])
-        self.assertIn("return", out)
-        self.assertIn("benchmark_return", out)
+        self.assertIn("return_percent", out)
+        self.assertNotIn("return", out, "a bare ratio has no units in its name")
+        self.assertIn("benchmark_return_percent", out)
         self.assertIn("summary", out)
         self.assertIn("run_id", out)
 

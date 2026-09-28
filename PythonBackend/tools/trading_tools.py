@@ -141,7 +141,7 @@ def backtest_strategy(symbol: str, strategy: str = "sma", start: str = "", end: 
         "trades": mine["trades"],
         "win_rate": None if mine["win_rate"] is None else round(mine["win_rate"], 3),
         "final_value": round(mine["final"], 2),
-        "return_at_slippage": {f"{k:g}bps": round(v, 4) for k, v in costs.items()},
+        "return_percent_at_slippage": {f"{k:g}bps": round(v * 100, 2) for k, v in costs.items()},
         "warnings": notes,
         "summary": render.compact(result, notes),
     }
