@@ -781,6 +781,51 @@ class MicrostructureTests(unittest.TestCase):
         self.assertLess(worked, swept)
 
 
+class UnitsTests(unittest.TestCase):
+    """A number handed to a model needs its units in its name.
+
+    `"return": 5644.4394` is a ratio sitting beside prose that reads
+    "+564443.9%", and the model multiplied by 1000 and reported a figure
+    ten times too large. It was not wrong about the strategy -- it called
+    it correctly -- but the headline number was fiction, which is worse
+    than a wrong verdict because it looks checkable.
+    """
+
+    AMBIGUOUS = {"return", "benchmark_return", "drawdown", "alpha", "vol", "volatility"}
+
+    def tools(self):
+        from tools import trading_tools
+        return [getattr(trading_tools, n) for n in dir(trading_tools)
+                if not n.startswith("_") and callable(getattr(trading_tools, n))
+                and getattr(getattr(trading_tools, n), "__module__", "") == "tools.trading_tools"]
+
+    def test_no_tool_returns_a_bare_ratio_called_return(self):
+        """Caught by reading the source rather than by calling everything:
+        several of these hit the network."""
+        import re
+        source = open("../PythonBackend/tools/trading_tools.py").read() \
+            if __import__("os").path.exists("../PythonBackend/tools/trading_tools.py") \
+            else open(__import__("tools.trading_tools", fromlist=["x"]).__file__).read()
+        for key in ('"return":', '"benchmark_return":'):
+            self.assertNotIn(key, source,
+                             f'{key} is a ratio with no units in its name; use _percent')
+
+    def test_percent_fields_really_are_percentages(self):
+        from tools.trading_tools import backtest_strategy
+        from trading.analysis import backtest
+        from trading.data import Bar
+        bars = [Bar(ts=1_600_000_000 + i * 86400, open=100 + i, high=101 + i,
+                    low=99 + i, close=100 + i, volume=1e6) for i in range(300)]
+        raw = backtest(bars, "sma", {"fast": 5, "slow": 20}, symbol="UNITTEST")
+        # A ratio of 0.5 must surface as 50, not 0.5 and not 500.
+        ratio = raw.metrics["total_return"]
+        self.assertAlmostEqual(round(ratio * 100, 2), round(ratio, 4) * 100, places=2)
+
+    def test_the_docstring_tells_the_model_the_units(self):
+        from tools.trading_tools import backtest_strategy
+        self.assertIn("_percent", backtest_strategy.__doc__)
+
+
 class CompetitionTests(unittest.TestCase):
     """The Rotman competition's constraints, and sizing that respects them.
     No network: the optimiser and the rules are pure arithmetic."""

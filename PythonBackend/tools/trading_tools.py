@@ -82,7 +82,10 @@ def backtest_strategy(symbol: str, strategy: str = "sma", start: str = "", end: 
     """Backtest a trading strategy on historical prices. Simulation only -- no real money.
 
     The result ALWAYS includes buy-and-hold over the same period, with the
-    same costs, as `benchmark_return`. Never run a second backtest with
+    same costs, as `benchmark_return_percent`. Every figure named
+    `_percent` IS a percent -- +564443.9 means the account grew 5,644x --
+    so quote it as it stands and never rescale it. Never run a second
+    backtest with
     strategy="hold" to compare -- that answer is already in the first one.
 
     Args:
@@ -130,8 +133,8 @@ def backtest_strategy(symbol: str, strategy: str = "sma", start: str = "", end: 
         "params": result.params,
         "from": result.dates[0],
         "to": result.dates[-1],
-        "return": round(mine["total_return"], 4),
-        "benchmark_return": round(result.benchmark_metrics["total_return"], 4),
+        "return_percent": round(mine["total_return"] * 100, 2),
+        "benchmark_return_percent": round(result.benchmark_metrics["total_return"] * 100, 2),
         "cagr": round(mine["cagr"], 4),
         "max_drawdown": round(mine["max_drawdown"], 4),
         "sharpe": round(mine["sharpe"], 2),
@@ -179,10 +182,10 @@ def sweep_strategy(symbol: str, strategy: str = "sma", start: str = "", end: str
         verdict = "Most settings beat buy-and-hold here, so the effect isn't one lucky combination."
     return {
         "ok": True, "symbol": symbol.upper(), "strategy": strategy, "runs": result["runs"],
-        "best": {"params": best["params"], "return": round(best["return"], 4),
+        "best": {"params": best["params"], "return_percent": round(best["return"] * 100, 2),
                  "sharpe": round(best["sharpe"], 2), "trades": best["trades"]},
         "median_return": round(result["median_return"], 4),
-        "benchmark_return": round(result["benchmark_return"], 4),
+        "benchmark_return_percent": round(result["benchmark_return"] * 100, 2),
         "robustness": round(result["robustness"], 3),
         "verdict": verdict,
     }
@@ -216,7 +219,7 @@ def walk_forward_test(symbol: str, strategy: str = "sma", start: str = "", end: 
     return {
         "ok": True, "symbol": symbol.upper(), "strategy": strategy,
         "out_of_sample_return": round(result["out_of_sample_return"], 4),
-        "benchmark_return": round(result["benchmark_return"], 4),
+        "benchmark_return_percent": round(result["benchmark_return"] * 100, 2),
         "beat_benchmark": result["beat_benchmark"],
         "every_fold_profitable": result["consistent"],
         "folds": [{k: (round(v, 4) if isinstance(v, float) else v) for k, v in fold.items()}
@@ -321,8 +324,8 @@ def stress_test_strategy(symbol: str, strategy: str = "sma", start: str = "",
     sr = moments["mean"] / moments["sd"] if moments["sd"] > 0 else 0.0
     out = {"ok": True, "symbol": symbol, "strategy": strategy,
            "sharpe_annual": round(quant.annualise(sr, per_year), 3),
-           "return": round(result.metrics["total_return"], 4),
-           "benchmark_return": round(result.benchmark_metrics["total_return"], 4),
+           "return_percent": round(result.metrics["total_return"] * 100, 2),
+           "benchmark_return_percent": round(result.benchmark_metrics["total_return"] * 100, 2),
            "bars": moments["n"], "verdict": []}
 
     if "real" in wanted:
@@ -949,6 +952,10 @@ def past_backtests(limit: int = 10) -> dict:
         limit: How many to return.
     """
     runs = store.list_runs(max(1, min(50, int(limit))))
-    return {"ok": True, "runs": [{**r, "return": round(r["return"] or 0, 4),
-                                  "benchmark_return": round(r["benchmark_return"] or 0, 4)}
-                                 for r in runs]}
+    trimmed = []
+    for row in runs:
+        row = dict(row)
+        row["return_percent"] = round((row.pop("return", 0) or 0) * 100, 2)
+        row["benchmark_return_percent"] = round((row.pop("benchmark_return", 0) or 0) * 100, 2)
+        trimmed.append(row)
+    return {"ok": True, "runs": trimmed}
