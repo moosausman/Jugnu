@@ -1,41 +1,112 @@
 # Jugnu
 
-A macOS menu-bar AI assistant that can actually operate the machine — files,
-Mail, Calendar, Reminders, Contacts, Safari, WhatsApp, the shell, the
-keyboard and mouse, Notion, and the web.
+A macOS menu-bar AI agent that operates the machine — files, Mail, Calendar,
+Reminders, Contacts, Safari, WhatsApp, the shell, the keyboard and mouse,
+Notion and the web — and a quantitative research terminal built to **reject
+trading strategies rather than find them**.
+
+<p align="center">
+  <img src="docs/images/terminals.jpg" alt="Four analyses running at once on the agent account's desktop" width="100%">
+</p>
+
+<p align="center"><em>One tool call: four terminals opened on a second macOS
+account, tiled, each running its own analysis. Left to right: is the Sharpe
+real, did the parameter search overfit, what would the trade cost to execute,
+and a measurement of a live order book.</em></p>
+
+---
+
+## Two things here are unusual
+
+**It has its own computer.** Jugnu runs heavy work in a *second macOS user
+account* that it controls over a local HTTP bridge — real GUI, real process
+isolation (`drwx------`), live screen streaming back to a window you can take
+over. Long sweeps never touch the session you are typing in, and you never
+switch user.
+
+**The research terminal argues with you.** Most trading tools help you find
+strategies. These are built to disqualify them: probability of backtest
+overfitting, a Sharpe deflated by every trial you have *ever* run on that
+instrument, purged cross-validation, factor attribution, and an order-book
+simulator that charges you for the shares you failed to trade.
+
+| | |
+|---|---|
+| 201 tools | every one classified into four risk tiers |
+| 19 agents | named subsets of the tool surface |
+| 52 commands | in the research terminal |
+| 339 tests | across 13 modules |
+| ~11,500 lines Swift | app + privileged bridge |
+| ~28,600 lines Python | backend, tools, research |
 
 ---
 
 ## Architecture
 
-Four processes, not one:
-
 ```
 ┌─ Jugnu.app ────────────────────────────────── SwiftUI + AppKit ─┐
-│  MenuBarController · ContentView · SettingsStore · AppState     │
+│  MenuBarController · ContentView · DeskView · AppState          │
 │  BackendBridge ──┐                                              │
 └──────────────────┼──────────────────────────────────────────────┘
                    │  one JSON object per line, over stdin/stdout
 ┌──────────────────▼─ bridge.py ─────────────── long-lived Python ┐
 │  session.run_turn()  ← the shared spine for every frontend      │
-│     planner.py   goal      → task graph        (PLANNER model)  │
-│     executor.py  task graph → ordered execution                 │
-│     agent_core.py          → per-task tool loop (PLANNER model) │
-│     agents.py    13 agents  = named subsets of the tool surface │
-│     tools.py     141 tools                                      │
-│  background threads: ProactiveWatcher · DailyReview · Activity  │
-└───────┬───────────────────┬─────────────────────┬───────────────┘
-        │ HTTP :8765        │ HTTP :8080          │ Ollama, or any
-   MacBridge.app        SearXNG              OpenAI-compatible API
-   (separate repo)      (optional)
+│     fastpath.py  regex   → one tool call, no model at all       │
+│     router.py    domain  → one agent, skipping the planner      │
+│     planner.py   goal    → task graph           (PLANNER model) │
+│     executor.py  graph   → ordered execution                    │
+│     agent_core.py        → per-task tool loop   (PLANNER model) │
+│     policy.py    201 tools, 4 risk tiers, approvals, audit      │
+│  background: ProactiveWatcher · DailyReview · Scheduler         │
+└───────┬──────────────────────┬──────────────────────┬───────────┘
+        │ HTTP :8765           │ HTTP :8766           │ Ollama, or any
+   MacBridge.app          MacBridge.app          OpenAI-compatible API,
+   (your session)         (agent account)        or your Claude plan
+                                │
+                          trading/ — 29 modules, 9,693 lines
 ```
 
 **The model split is the core idea.** `PLANNER` is the only role that ever
-*decides* anything — which tasks a goal breaks into, and which tool to call
-with which arguments at each step. `AGENT` is deliberately smaller: it only
-renders already-decided results into prose. Point `JUGNU_PLANNER_MODEL` at
-something capable and `JUGNU_MODEL` at something cheap and that split pays
-off directly.
+*decides* anything. `AGENT` is deliberately smaller: it renders
+already-decided results into prose. Point `JUGNU_PLANNER_MODEL` at something
+capable and `JUGNU_MODEL` at something cheap and that split pays off directly.
+
+---
+
+## The research terminal
+
+```bash
+python -m trading term                  # or ask Jugnu to open one
+```
+
+Fifty-two commands. The ones that matter are the ones that can fail a
+strategy:
+
+| | |
+|---|---|
+| `stats` | probabilistic Sharpe, block-bootstrap interval, the track record the number would need |
+| `pbo` | probability of backtest overfitting, by combinatorially symmetric cross-validation |
+| `dsr` | Sharpe after paying for **every** backtest ever run on that instrument |
+| `search` | that ledger, and the bar it has raised |
+| `cv` | purged, embargoed cross-validation |
+| `factor` | alpha against market, size, value and momentum, with Newey-West errors |
+| `exec` | six execution algorithms through a real matching engine |
+| `cap` | fund size before market impact eats the edge |
+| `micro` | measure a live order book and tape, and check the model against it |
+| `alloc` | equal weight vs inverse variance vs hierarchical risk parity |
+
+Three results it produced about itself, all reproducible:
+
+- An SMA sweep on AAPL since 2015 has **PBO 73%** — picking the best
+  parameters in-sample selects a below-median performer out of sample nearly
+  three times in four.
+- Its order-book simulator reproduces the **square-root impact law** (exponent
+  0.58 worked, 1.16 swept, R² 0.99) from a book shape and response function
+  *measured* from 400,000 real exchange trades, not assumed.
+- Hierarchical risk parity holds the same book at **6.0% annual volatility
+  against 8.2% equal-weighted**.
+
+Everything is paper. There is no broker anywhere in the codebase.
 
 ---
 
@@ -53,7 +124,7 @@ PythonBackend/PythonEnv/bin/pip install -r PythonBackend/requirements.txt
 
 ### 2. MacBridge (required)
 
-Roughly 130 of the 141 tools are HTTP calls to a separate helper app. Without
+Roughly 130 of the 201 tools are HTTP calls to a separate helper app. Without
 it, Jugnu can hold a conversation but cannot *do* anything.
 
 ```bash
@@ -134,7 +205,7 @@ Settings covers the common cases. Everything else is environment variables.
 | Variable | Default | Meaning |
 |---|---|---|
 | `JUGNU_PROVIDER` | `api` | `local` (Ollama) or `api` |
-| `JUGNU_<ROLE>_PROVIDER` | — | per-role override; roles are `PLANNER`, `AGENT`, `SEARCH`, `EMBED` |
+| `JUGNU_<ROLE>_PROVIDER` | — | per-role override; roles are `PLANNER`, `AGENT`, `SEARCH`, `EMBED`, `FAST`, `DEEP`, `EASY` |
 | `JUGNU_PLANNER_MODEL` | `qwen3.6:27b` | local planner model |
 | `JUGNU_MODEL` | `qwen3.5:9b` | local agent model, and search's fallback |
 | `JUGNU_EMBED_MODEL` | `nomic-embed-text` | local embedding model |
